@@ -1,0 +1,15 @@
+[package]
+name = "rnostr-server"
+version = "0.1.0"
+edition = "2021"
+description = "Nostr relay server implementation"
+license = "MIT"
+
+[dependencies]
+rnostr-core = { path = "../core" }
+rnostr-database = { path = "../database" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }

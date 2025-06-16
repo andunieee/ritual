@@ -1,0 +1,26 @@
+[workspace]
+members = [
+    "core",
+    "upper",
+    "database",
+    "server"
+]
+resolver = "2"
+
+[workspace.dependencies]
+tokio = { version = "1.0", features = ["full"] }
+tokio-tungstenite = { version = "0.20", features = ["native-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+secp256k1 = { version = "0.28", features = ["rand", "recovery", "global-context"] }
+sha2 = "0.10"
+hex = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
+url = "2.4"
+futures = "0.3"
+thiserror = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+rand = "0.8"
+bytes = "1.0"
+dashmap = "5.5"
