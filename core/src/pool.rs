@@ -1,44 +1,33 @@
-use crate::{Event, Filter, Relay, RelayOptions, Result, SubscriptionOptions, RelayEvent};
+use crate::{Event, Filter, Relay, RelayEvent, RelayOptions, Result, SubscriptionOptions};
 use dashmap::DashMap;
 use std::sync::Arc;
-use tokio::sync::mpsc;
-use tokio::time::{sleep, Duration};
+use tokio::sync::{mpsc, oneshot};
 
-/// Pool manages connections to multiple relays
+/// pool manages connections to multiple relays
 pub struct Pool {
     relays: Arc<DashMap<String, Arc<Relay>>>,
-    auth_handler: Option<Box<dyn Fn(&Event) -> Result<()> + Send + Sync>>,
-    event_middleware: Option<Box<dyn Fn(&RelayEvent) + Send + Sync>>,
-    duplicate_middleware: Option<Box<dyn Fn(&str, &crate::ID) + Send + Sync>>,
     relay_options: RelayOptions,
-    penalty_box: Option<Arc<DashMap<String, (f64, f64)>>>, // (failures, remaining_seconds)
+    penalty_box: Option<Arc<DashMap<String, (u16, u32)>>>, // (failures, remaining_seconds)
 }
 
-/// Options for creating a pool
 #[derive(Default)]
 pub struct PoolOptions {
-    pub auth_handler: Option<Box<dyn Fn(&Event) -> Result<()> + Send + Sync>>,
     pub penalty_box: bool,
-    pub event_middleware: Option<Box<dyn Fn(&RelayEvent) + Send + Sync>>,
-    pub duplicate_middleware: Option<Box<dyn Fn(&str, &crate::ID) + Send + Sync>>,
     pub relay_options: RelayOptions,
 }
 
-/// Result of publishing an event
 pub struct PublishResult {
     pub error: Option<String>,
     pub relay_url: String,
     pub relay: Option<Arc<Relay>>,
 }
 
-/// Directed filter combines a filter with a specific relay URL
 pub struct DirectedFilter {
     pub filter: Filter,
     pub relay: String,
 }
 
 impl Pool {
-    /// Create a new pool
     pub fn new(opts: PoolOptions) -> Self {
         let penalty_box = if opts.penalty_box {
             Some(Arc::new(DashMap::new()))
@@ -48,91 +37,118 @@ impl Pool {
 
         Self {
             relays: Arc::new(DashMap::new()),
-            auth_handler: opts.auth_handler,
-            event_middleware: opts.event_middleware,
-            duplicate_middleware: opts.duplicate_middleware,
             relay_options: opts.relay_options,
             penalty_box,
         }
     }
 
-    /// Ensure a relay connection exists and is active
+    /// get or create a relay connection to the given url
     pub async fn ensure_relay(&self, url: &str) -> Result<Arc<Relay>> {
-        let normalized_url = crate::normalize::normalize_url(url);
-        
-        // Check penalty box
+        let normalized_url = crate::normalize::normalize_url(url)?;
+
+        // check penalty box
         if let Some(ref penalty_box) = self.penalty_box {
-            if let Some((_, remaining)) = penalty_box.get(&normalized_url) {
-                if *remaining > 0.0 {
+            if let Some(pb) = penalty_box.get(normalized_url.as_str()) {
+                let (_, remaining) = *pb;
+                if remaining > 0 {
                     return Err(format!("in penalty box, {}s remaining", remaining).into());
                 }
             }
         }
 
-        // Check if relay already exists and is connected
-        if let Some(relay) = self.relays.get(&normalized_url) {
-            if relay.is_connected() {
-                return Ok(relay.clone());
-            }
+        // check if relay already exists
+        if let Some(relay) = self.relays.get(normalized_url.as_str()) {
+            return Ok(relay.clone());
         }
 
-        // Create new relay and connect
-        let mut relay = Relay::new(&normalized_url, RelayOptions::default());
-        
-        match relay.connect().await {
-            Ok(_) => {
+        // create new relay connection
+        let (on_close, handle_close) = oneshot::channel::<String>();
+        let new_opts = RelayOptions {
+            on_close: Some(on_close),
+            ..self.relay_options
+        };
+        tokio::spawn(async move {
+            match handle_close.await {
+                Ok(reason) => {
+                    println!(
+                        "[{}] relay connection closed: {}",
+                        normalized_url.as_str(),
+                        reason
+                    );
+
+                    // the relay connection will be dropped from the map if it disconnects
+                    self.relays.remove(normalized_url.as_str());
+                }
+                Err(err) => {
+                    println!(
+                        "got an error from the handle_close oneshot for {}: {}",
+                        normalized_url.as_str(),
+                        err
+                    );
+                }
+            }
+        });
+
+        match Relay::connect(normalized_url.to_owned(), new_opts).await {
+            Ok(relay) => {
                 let relay = Arc::new(relay);
-                self.relays.insert(normalized_url, relay.clone());
+                self.relays
+                    .insert(normalized_url.to_string(), relay.clone());
                 Ok(relay)
             }
             Err(err) => {
-                // Add to penalty box
+                // add to penalty box
                 if let Some(ref penalty_box) = self.penalty_box {
-                    let (failures, _) = penalty_box.get(&normalized_url).map(|v| *v).unwrap_or((0.0, 0.0));
-                    let new_penalty = 30.0 + 2.0_f64.powf(failures + 1.0);
-                    penalty_box.insert(normalized_url, (failures + 1.0, new_penalty));
+                    let (failures, _) = penalty_box
+                        .get(normalized_url.as_str())
+                        .map(|v| *v)
+                        .unwrap_or((0u16, 0u32));
+                    let new_penalty = 30 + 2u32.pow(failures as u32 + 1);
+                    penalty_box.insert(normalized_url.to_string(), (failures + 1, new_penalty));
                 }
                 Err(format!("failed to connect: {}", err).into())
             }
         }
     }
 
-    /// Publish an event to multiple relays
-    pub async fn publish_many(&self, urls: Vec<String>, event: Event) -> mpsc::UnboundedReceiver<PublishResult> {
+    /// publish an event to multiple relays
+    pub async fn publish_many(
+        &self,
+        urls: Vec<String>,
+        event: Event,
+    ) -> mpsc::UnboundedReceiver<PublishResult> {
         let (tx, rx) = mpsc::unbounded_channel();
-        
+
         for url in urls {
             let tx = tx.clone();
             let event = event.clone();
             let pool = self.clone();
-            
+
             tokio::spawn(async move {
                 let result = match pool.ensure_relay(&url).await {
-                    Ok(relay) => {
-                        match relay.publish(event).await {
-                            Ok(_) => PublishResult {
-                                error: None,
-                                relay_url: url.clone(),
-                                relay: Some(relay),
-                            },
-                            Err(err) => PublishResult {
-                                error: Some(err.to_string()),
-                                relay_url: url.clone(),
-                                relay: Some(relay),
-                            },
-                        }
-                    }
+                    Ok(relay) => match relay.publish(event).await {
+                        Ok(_) => PublishResult {
+                            error: None,
+                            relay_url: url.clone(),
+                            relay: Some(relay),
+                        },
+                        Err(err) => PublishResult {
+                            error: Some(err.to_string()),
+                            relay_url: url.clone(),
+                            relay: Some(relay),
+                        },
+                    },
                     Err(err) => PublishResult {
                         error: Some(err.to_string()),
                         relay_url: url.clone(),
                         relay: None,
                     },
                 };
-                
+
                 let _ = tx.send(result);
             });
         }
-        
+
         rx
     }
 
@@ -144,13 +160,13 @@ impl Pool {
         opts: SubscriptionOptions,
     ) -> mpsc::UnboundedReceiver<RelayEvent> {
         let (tx, rx) = mpsc::unbounded_channel();
-        
+
         for url in urls {
             let tx = tx.clone();
             let filter = filter.clone();
             let opts = opts.clone();
             let pool = self.clone();
-            
+
             tokio::spawn(async move {
                 if let Ok(relay) = pool.ensure_relay(&url).await {
                     if let Ok(subscription) = relay.subscribe(filter, opts).await {
@@ -160,16 +176,16 @@ impl Pool {
                 }
             });
         }
-        
+
         rx
     }
 
-    /// Close the pool
+    /// close the pool
     pub async fn close(&self) {
         for relay in self.relays.iter() {
-            // Close each relay connection
-            // This would need to be implemented properly
+            relay.close();
         }
+        drop(self);
     }
 }
 
@@ -177,9 +193,6 @@ impl Clone for Pool {
     fn clone(&self) -> Self {
         Self {
             relays: self.relays.clone(),
-            auth_handler: None, // Can't clone function pointers easily
-            event_middleware: None,
-            duplicate_middleware: None,
             relay_options: RelayOptions::default(),
             penalty_box: self.penalty_box.clone(),
         }

@@ -1,8 +1,8 @@
-use crate::{Event, Filter, ID, Result};
+use crate::{Event, Filter, Result, ID};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Trait for all Nostr message envelopes
+/// trait for all Nostr message envelopes
 pub trait Envelope {
     fn label(&self) -> &'static str;
     fn from_json(&mut self, data: &str) -> Result<()>;
@@ -79,9 +79,11 @@ impl Envelope for CountEnvelope {
             return Err("invalid COUNT envelope".into());
         }
         self.subscription_id = arr[1].as_str().unwrap_or("").to_string();
-        
+
         // Try to parse as count result first
-        if let Ok(count_result) = serde_json::from_value::<serde_json::Map<String, Value>>(arr[2].clone()) {
+        if let Ok(count_result) =
+            serde_json::from_value::<serde_json::Map<String, Value>>(arr[2].clone())
+        {
             if let Some(count) = count_result.get("count") {
                 self.count = count.as_u64().map(|c| c as u32);
             }
@@ -220,7 +222,7 @@ impl Envelope for AuthEnvelope {
         if arr.len() < 2 {
             return Err("invalid AUTH envelope".into());
         }
-        
+
         if arr[1].is_object() {
             self.event = Some(serde_json::from_value(arr[1].clone())?);
         } else {
@@ -236,9 +238,9 @@ pub fn parse_message(message: &str) -> Result<Box<dyn Envelope>> {
     if arr.is_empty() {
         return Err("empty message".into());
     }
-    
+
     let label = arr[0].as_str().ok_or("invalid label")?;
-    
+
     match label {
         "EVENT" => {
             let mut env = EventEnvelope {
