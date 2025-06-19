@@ -836,16 +836,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "rnostr-core"
+name = "rnostr"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "bech32",
+ "bytes",
  "chrono",
  "dashmap",
  "futures",
  "hex",
  "nonempty",
+ "rand",
  "secp256k1",
  "serde",
  "serde_json",
@@ -853,42 +855,8 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-tungstenite",
- "url",
-]
-
-[[package]]
-name = "rnostr-database"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "rnostr-core",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "rnostr-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "rnostr-core",
- "rnostr-database",
- "serde",
- "serde_json",
- "tokio",
  "tracing",
-]
-
-[[package]]
-name = "rnostr-upper"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "rnostr-core",
- "serde",
- "serde_json",
- "tokio",
+ "url",
 ]
 
 [[package]]

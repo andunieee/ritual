@@ -1,13 +1,11 @@
-[workspace]
-members = [
-    "core",
-    "upper",
-    "database",
-    "server"
-]
-resolver = "2"
+[package]
+name = "rnostr"
+version = "0.1.0"
+edition = "2021"
+description = "Core Nostr protocol types and utilities"
+license = "MIT"
 
-[workspace.dependencies]
+[dependencies]
 tokio = { version = "1.0", features = ["full"] }
 tokio-tungstenite = { version = "0.20", features = ["native-tls"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -25,3 +23,4 @@ rand = "0.8"
 bytes = "1.0"
 dashmap = "5.5"
 nonempty = { version = "0.11.0", features = ["serialize"] }
+bech32 = "0.9"
