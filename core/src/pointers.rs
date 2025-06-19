@@ -1,17 +1,11 @@
 use crate::{Event, Filter, Kind, PubKey, Tag, TagMap, ID};
 
-pub trait Pointer {
-    /// returns the pointer as a string as it would be seen in the value of a tag
-    fn as_tag_reference(&self) -> String;
-
-    /// converts the pointer to a tag that can be included in events
-    fn as_tag(&self) -> Tag;
-
-    /// converts the pointer to a Filter that can be used to query for it
-    fn as_filter(&self) -> Filter;
-
-    /// check if the pointer matches an event
-    fn matches_event(&self, event: &Event) -> bool;
+/// Unified pointer enum for all Nostr pointer types
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pointer {
+    Profile(ProfilePointer),
+    Event(EventPointer),
+    Entity(EntityPointer),
 }
 
 /// Pointer to a Nostr profile
@@ -36,31 +30,6 @@ impl ProfilePointer {
         };
 
         Ok(Self { public_key, relays })
-    }
-}
-
-impl Pointer for ProfilePointer {
-    fn as_tag_reference(&self) -> String {
-        self.public_key.to_hex()
-    }
-
-    fn as_tag(&self) -> Tag {
-        let mut tag = vec!["p".to_string(), self.public_key.to_hex()];
-        if !self.relays.is_empty() {
-            tag.push(self.relays[0].clone());
-        }
-        tag
-    }
-
-    fn as_filter(&self) -> Filter {
-        Filter {
-            authors: Some(vec![self.public_key]),
-            ..Default::default()
-        }
-    }
-
-    fn matches_event(&self, _event: &Event) -> bool {
-        false
     }
 }
 
@@ -102,34 +71,6 @@ impl EventPointer {
     }
 }
 
-impl Pointer for EventPointer {
-    fn as_tag_reference(&self) -> String {
-        self.id.to_hex()
-    }
-
-    fn as_tag(&self) -> Tag {
-        let mut tag = vec!["e".to_string(), self.id.to_hex()];
-        if !self.relays.is_empty() {
-            tag.push(self.relays[0].clone());
-            if let Some(author) = &self.author {
-                tag.push(author.to_hex());
-            }
-        }
-        tag
-    }
-
-    fn as_filter(&self) -> Filter {
-        Filter {
-            ids: Some(vec![self.id]),
-            ..Default::default()
-        }
-    }
-
-    fn matches_event(&self, event: &Event) -> bool {
-        event.id == self.id
-    }
-}
-
 /// Pointer to a Nostr entity (addressable event)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntityPointer {
@@ -140,7 +81,7 @@ pub struct EntityPointer {
 }
 
 impl EntityPointer {
-    /// Create an EntityPointer from a tag
+    /// create an EntityPointer from a tag
     pub fn from_tag(tag: &Tag) -> crate::Result<Self> {
         if tag.len() < 2 {
             return Err("tag must have at least 2 elements".into());
@@ -165,47 +106,89 @@ impl EntityPointer {
         };
 
         Ok(Self {
-            public_key,
             kind,
-            identifier,
             relays,
+            public_key,
+            identifier,
         })
     }
 }
 
-impl Pointer for EntityPointer {
-    fn as_tag_reference(&self) -> String {
-        format!(
-            "{}:{}:{}",
-            self.kind,
-            self.public_key.to_hex(),
-            self.identifier
-        )
-    }
-
-    fn as_tag(&self) -> Tag {
-        let mut tag = vec!["a".to_string(), self.as_tag_reference()];
-        if !self.relays.is_empty() {
-            tag.push(self.relays[0].clone());
-        }
-        tag
-    }
-
-    fn as_filter(&self) -> Filter {
-        let mut tags = TagMap::new();
-        tags.insert("d".to_string(), vec![self.identifier.clone()]);
-
-        Filter {
-            kinds: Some(vec![self.kind]),
-            authors: Some(vec![self.public_key]),
-            tags: Some(tags),
-            ..Default::default()
+impl Pointer {
+    /// returns the pointer as a string as it would be seen in the value of a tag
+    pub fn as_tag_reference(&self) -> String {
+        match self {
+            Pointer::Profile(p) => p.public_key.to_hex(),
+            Pointer::Event(p) => p.id.to_hex(),
+            Pointer::Entity(p) => format!("{}:{}:{}", p.kind, p.public_key.to_hex(), p.identifier),
         }
     }
 
-    fn matches_event(&self, event: &Event) -> bool {
-        event.pubkey == self.public_key
-            && event.kind == self.kind
-            && event.tags.get_d() == self.identifier
+    /// converts the pointer to a tag that can be included in events
+    pub fn as_tag(&self) -> Tag {
+        match self {
+            Pointer::Profile(p) => {
+                let mut tag = vec!["p".to_string(), p.public_key.to_hex()];
+                if !p.relays.is_empty() {
+                    tag.push(p.relays[0].clone());
+                }
+                tag
+            }
+            Pointer::Event(p) => {
+                let mut tag = vec!["e".to_string(), p.id.to_hex()];
+                if !p.relays.is_empty() {
+                    tag.push(p.relays[0].clone());
+                    if let Some(author) = &p.author {
+                        tag.push(author.to_hex());
+                    }
+                }
+                tag
+            }
+            Pointer::Entity(p) => {
+                let mut tag = vec!["a".to_string(), self.as_tag_reference()];
+                if !p.relays.is_empty() {
+                    tag.push(p.relays[0].clone());
+                }
+                tag
+            }
+        }
+    }
+
+    /// converts the pointer to a Filter that can be used to query for it
+    pub fn as_filter(&self) -> Filter {
+        match self {
+            Pointer::Profile(p) => Filter {
+                authors: Some(vec![p.public_key]),
+                ..Default::default()
+            },
+            Pointer::Event(p) => Filter {
+                ids: Some(vec![p.id]),
+                ..Default::default()
+            },
+            Pointer::Entity(p) => {
+                let mut tags = TagMap::new();
+                tags.insert("d".to_string(), vec![p.identifier.clone()]);
+
+                Filter {
+                    kinds: Some(vec![p.kind]),
+                    authors: Some(vec![p.public_key]),
+                    tags: Some(tags),
+                    ..Default::default()
+                }
+            }
+        }
+    }
+
+    /// check if the pointer matches an event
+    pub fn matches_event(&self, event: &Event) -> bool {
+        match self {
+            Pointer::Profile(_) => false,
+            Pointer::Event(p) => event.id == p.id,
+            Pointer::Entity(p) => {
+                event.pubkey == p.public_key
+                    && event.kind == p.kind
+                    && event.tags.get_d() == p.identifier
+            }
+        }
     }
 }
