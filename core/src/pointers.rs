@@ -155,10 +155,6 @@ impl EntityPointer {
             .parse()
             .map_err(|_| format!("invalid addr kind '{}'", parts[0]))?;
 
-        if kind > (1 << 16) {
-            return Err(format!("invalid addr kind '{}'", parts[0]).into());
-        }
-
         let public_key = PubKey::from_hex(parts[1])?;
         let identifier = parts[2].to_string();
 

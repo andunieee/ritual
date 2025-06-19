@@ -54,7 +54,7 @@ impl Event {
     pub fn serialize(&self) -> Vec<u8> {
         let array = serde_json::json!([
             0,
-            self.pubkey.to_hex(),
+            self.pubkey,
             self.created_at.0,
             self.kind,
             self.tags.0,

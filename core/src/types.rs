@@ -1,5 +1,6 @@
 use serde::{de::Error, Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
+use url::Url;
 
 /// A 32-byte event ID
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -167,7 +168,7 @@ pub type TagMap = std::collections::HashMap<String, Vec<String>>;
 #[derive(Debug, Clone)]
 pub struct RelayEvent {
     pub event: crate::Event,
-    pub relay_url: String,
+    pub relay_url: Url,
 }
 
 impl fmt::Display for RelayEvent {

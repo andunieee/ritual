@@ -137,7 +137,6 @@ pub fn parse_message(message: &str) -> Result<Envelope> {
             if arr.len() < 3 {
                 return Err("invalid REQ envelope".into());
             }
-            let filter: Filter = serde_json::from_value(arr[2].clone())?;
             let mut filters = Vec::with_capacity(arr.len() - 2);
             for x in 2.. {
                 let extraf: Filter = serde_json::from_value(arr[x].clone())?;

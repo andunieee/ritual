@@ -92,7 +92,7 @@ impl fmt::Display for Tags {
 
 impl Default for Tags {
     fn default() -> Self {
-        Self::new()
+        Tags(vec![])
     }
 }
 

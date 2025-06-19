@@ -1,8 +1,7 @@
-use crate::{envelopes::*, Event, Filter, Result, Subscription, ID};
+use crate::{envelopes::*, Event, Filter, Result, Subscription, SubscriptionOptions};
 use dashmap::DashMap;
 use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt, TryFutureExt};
-use nonempty::NonEmpty;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use tokio::net::TcpStream;
@@ -19,7 +18,7 @@ pub struct Relay {
     conn_write: Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>,
     subscriptions: Arc<DashMap<String, Arc<Mutex<Subscription>>>>,
     challenge: Arc<RwLock<Option<String>>>,
-    ok_callbacks: Arc<DashMap<ID, Box<dyn Fn(bool, &str) + Send + Sync>>>,
+    // ok_callbacks: Arc<DashMap<ID, Box<dyn Fn(bool, &str) + Send + Sync>>>,
     write_queue: mpsc::Sender<String>,
 }
 
@@ -44,7 +43,7 @@ impl Relay {
             conn_write: Arc::new(Mutex::new(conn_write)),
             subscriptions: Arc::new(DashMap::new()),
             challenge: Arc::new(RwLock::new(None)),
-            ok_callbacks: Arc::new(DashMap::new()),
+            // ok_callbacks: Arc::new(DashMap::new()),
             write_queue: write_sender,
         };
 
@@ -117,16 +116,16 @@ impl Relay {
                                     && s.filter
                                         .matches_ignoring_timestamp_constraints(&event.event)
                                 {
-                                    s.events_sender.send(event.event);
+                                    let _ = s.events_sender.send(event.event);
                                 } else if s.filter.matches(&event.event) {
-                                    s.events_sender.send(event.event);
+                                    let _ = s.events_sender.send(event.event);
                                 }
                             };
                         }
                         Envelope::Eose(eose) => {
                             if let Some(sub) = subs_map.get(eose.subscription_id.as_str()) {
                                 if let Some(sender) = sub.lock().await.eose_sender.take() {
-                                    sender.send(());
+                                    let _ = sender.send(());
                                 }
                             };
                         }
@@ -141,11 +140,11 @@ impl Relay {
                         }
                         Envelope::Closed(closed) => {
                             if let Some((_, sub)) = subs_map.remove(&closed.subscription_id) {
-                                drop(sub)
+                                sub.clone().lock().await.close();
                             }
                         }
                         Envelope::AuthChallenge(authc) => {
-                            challenge.write().await.insert(authc.challenge);
+                            let _ = challenge.write().await.insert(authc.challenge);
                         }
                         _ => {
                             println!(
@@ -162,50 +161,70 @@ impl Relay {
         Ok(relay)
     }
 
-    pub async fn write(&self, msg: String) -> Result<()> {
-        self.write_queue
-            .send(msg)
-            .map_err(|err| format!("failed to send: {}", err));
-        Ok(())
-    }
-
     pub async fn publish(&self, event: Event) -> Result<()> {
         let envelope = OutEventEnvelope { event };
         let msg = serde_json::to_string(&envelope)?;
-        self.write(msg);
+        self.write_queue
+            .send(msg)
+            .map_err(|err| {
+                format!(
+                    "[{}] failed to send {}: {}",
+                    self.url.as_str(),
+                    serde_json::to_string(&envelope).unwrap(),
+                    err
+                )
+            })
+            .await?;
         Ok(())
     }
 
     /// subscribe to events matching a filter
     pub async fn subscribe(
         &self,
-        filters: NonEmpty<Filter>,
+        filter: Filter,
         opts: SubscriptionOptions,
     ) -> Result<Arc<Mutex<Subscription>>> {
         let counter = SUBSCRIPTION_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let id = format!("{}:{}", counter, opts.label);
+        let id = if let Some(label) = opts.label {
+            format!("{}:{}", counter, label)
+        } else {
+            format!("{}", counter)
+        };
 
-        let msg = serde_json::to_string(&ReqEnvelope {
-            subscription_id: id,
-            filters,
-        })?;
-
-        let subscription = Arc::new(Mutex::new(Subscription::new(id.clone(), filters)));
+        let msg = format!("[\"REQ\",\"{}\",{}]", id, serde_json::to_string(&filter)?);
+        let (sub, close_notifier) = Subscription::new(id.clone(), filter);
+        let subscription = Arc::new(Mutex::new(sub));
         self.subscriptions.insert(id.clone(), subscription.clone());
 
-        self.write(msg).await?;
+        let subs_map = self.subscriptions.clone();
+        let write_queue = self.write_queue.clone();
+        let close_id = id.clone();
+        tokio::spawn(async move {
+            let _ = close_notifier.await;
+            if let Some(_) = subs_map.remove(&close_id) {
+                let msg = format!("[\"CLOSE\",\"{}\"]", id);
+                let _ = write_queue.send(msg).await;
+            }
+        });
+
+        let _ = self
+            .write_queue
+            .send(msg.clone())
+            .map_err(|err| format!("[{}] failed to send {}: {}", self.url.as_str(), msg, err))
+            .await;
 
         Ok(subscription)
     }
 
-    pub fn unsubscribe(&self, sub_id: &str) -> () {
-        if let Some((_, sub)) = self.subscriptions.remove(sub_id) {
-            drop(sub)
-        }
-    }
-
     pub async fn close(&self) -> () {
+        for sub in self.subscriptions.iter_mut() {
+            sub.clone().lock().await.close();
+        }
+
+        self.subscriptions.clear();
         let _ = self.conn_write.lock().await.close().await;
+
+        // (this doesn't call the "on_close" handler)
     }
 }
 

@@ -102,7 +102,7 @@ impl Pool {
 
     /// publish an event to multiple relays
     pub async fn publish_many(
-        &self,
+        &mut self,
         urls: Vec<String>,
         event: Event,
     ) -> mpsc::UnboundedReceiver<PublishResult> {
@@ -143,21 +143,32 @@ impl Pool {
         &self,
         urls: Vec<String>,
         filter: Filter,
-        opts: SubscriptionOptions,
-    ) -> mpsc::UnboundedReceiver<RelayEvent> {
-        let (tx, rx) = mpsc::unbounded_channel();
+        label: Option<String>,
+    ) -> mpsc::Receiver<RelayEvent> {
+        let (tx, rx) = mpsc::channel(1);
 
         for url in urls {
             let tx = tx.clone();
             let filter = filter.clone();
-            let opts = opts.clone();
             let pool = self.clone();
+            let label = label.clone();
 
             tokio::spawn(async move {
                 if let Ok(relay) = pool.ensure_relay(&url).await {
-                    if let Ok(subscription) = relay.lock().await.subscribe(filter, opts).await {
-                        // Handle events from this subscription
-                        // This is a simplified version - full implementation would handle the subscription properly
+                    let relay = relay.lock().await;
+                    if let Ok(subscription) = relay
+                        .subscribe(filter, SubscriptionOptions { label: label })
+                        .await
+                    {
+                        let mut sub = subscription.lock().await;
+                        while let Some(event) = sub.events.recv().await {
+                            let _ = tx
+                                .send(RelayEvent {
+                                    event,
+                                    relay_url: relay.url.clone(),
+                                })
+                                .await;
+                        }
                     }
                 }
             });
@@ -169,11 +180,13 @@ impl Pool {
     /// close the pool
     pub async fn close(self) {
         for relay in self.relays.iter() {
-            relay.close();
+            let _ = relay.clone().lock().await.close().await;
         }
+        self.relays.clear(); // this has to be called as the "on_close" handler won't be triggered
     }
 }
 
+// we can clone the pool because its fields are just arcs
 impl Clone for Pool {
     fn clone(&self) -> Self {
         Self {
