@@ -1,16 +1,16 @@
 use crate::{Event, Filter, Kind, PubKey, Tag, TagMap, ID};
 
 pub trait Pointer {
-    /// Returns the pointer as a string as it would be seen in the value of a tag
+    /// returns the pointer as a string as it would be seen in the value of a tag
     fn as_tag_reference(&self) -> String;
 
-    /// Converts the pointer to a tag that can be included in events
+    /// converts the pointer to a tag that can be included in events
     fn as_tag(&self) -> Tag;
 
-    /// Converts the pointer to a Filter that can be used to query for it
+    /// converts the pointer to a Filter that can be used to query for it
     fn as_filter(&self) -> Filter;
 
-    /// Check if the pointer matches an event
+    /// check if the pointer matches an event
     fn matches_event(&self, event: &Event) -> bool;
 }
 

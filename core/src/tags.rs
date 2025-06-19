@@ -1,19 +1,16 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
-/// A single tag (array of strings)
+/// a single tag (array of strings)
 pub type Tag = Vec<String>;
 
-/// Collection of tags
+/// collection of tags
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tags(pub Vec<Tag>);
 
 impl Tags {
-    /// Create new empty tags
-    pub fn new() -> Self {
-        Self(Vec::new())
-    }
-
-    /// Get the first "d" tag value or empty string
+    /// get the first "d" tag value or empty string
     pub fn get_d(&self) -> String {
         for tag in &self.0 {
             if tag.len() >= 2 && tag[0] == "d" {
@@ -23,8 +20,8 @@ impl Tags {
         String::new()
     }
 
-    /// Find the first tag with the given key that has at least one value
-    pub fn find(&self, key: &str) -> Option<&Tag> {
+    /// find the first tag with the given key that has at least one value
+    pub fn find(&self, key: String) -> Option<&Tag> {
         for tag in &self.0 {
             if tag.len() >= 2 && tag[0] == key {
                 return Some(tag);
@@ -33,12 +30,14 @@ impl Tags {
         None
     }
 
-    /// Find all tags with the given key that have at least one value
-    pub fn find_all(&self, key: &str) -> impl Iterator<Item = &Tag> {
-        self.0.iter().filter(move |tag| tag.len() >= 2 && tag[0] == key)
+    /// find all tags with the given key that have at least one value
+    pub fn find_all(&self, key: String) -> impl Iterator<Item = &Tag> {
+        self.0
+            .iter()
+            .filter(move |tag| tag.len() >= 2 && tag[0] == key)
     }
 
-    /// Find tag with specific key and value
+    /// find tag with specific key and value
     pub fn find_with_value(&self, key: &str, value: &str) -> Option<&Tag> {
         for tag in &self.0 {
             if tag.len() >= 2 && tag[0] == key && tag[1] == value {
@@ -48,7 +47,7 @@ impl Tags {
         None
     }
 
-    /// Find the last tag with the given key
+    /// find the last tag with the given key
     pub fn find_last(&self, key: &str) -> Option<&Tag> {
         for tag in self.0.iter().rev() {
             if tag.len() >= 2 && tag[0] == key {
@@ -58,7 +57,7 @@ impl Tags {
         None
     }
 
-    /// Find the last tag with specific key and value
+    /// find the last tag with specific key and value
     pub fn find_last_with_value(&self, key: &str, value: &str) -> Option<&Tag> {
         for tag in self.0.iter().rev() {
             if tag.len() >= 2 && tag[0] == key && tag[1] == value {
@@ -68,17 +67,7 @@ impl Tags {
         None
     }
 
-    /// Clone the tags (shallow copy)
-    pub fn clone_tags(&self) -> Self {
-        Self(self.0.clone())
-    }
-
-    /// Clone the tags deeply
-    pub fn clone_deep(&self) -> Self {
-        Self(self.0.iter().map(|tag| tag.clone()).collect())
-    }
-
-    /// Check if tags contain any of the given values for a tag name
+    /// check if tags contain any of the given values for a tag name
     pub fn contains_any(&self, tag_name: &str, values: &[String]) -> bool {
         for tag in &self.0 {
             if tag.len() < 2 || tag[0] != tag_name {
@@ -90,40 +79,20 @@ impl Tags {
         }
         false
     }
+}
 
-    /// Add a tag
-    pub fn push(&mut self, tag: Tag) {
-        self.0.push(tag);
-    }
-
-    /// Get length
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    /// Check if empty
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+impl fmt::Display for Tags {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match serde_json::to_string(self) {
+            Ok(json) => write!(f, "{}", json),
+            Err(err) => write!(f, "Tags({})", err),
+        }
     }
 }
 
 impl Default for Tags {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl std::ops::Deref for Tags {
-    type Target = Vec<Tag>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for Tags {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
     }
 }
 
@@ -136,12 +105,5 @@ impl From<Vec<Tag>> for Tags {
 impl From<Tags> for Vec<Tag> {
     fn from(tags: Tags) -> Self {
         tags.0
-    }
-}
-
-impl Tag {
-    /// Clone the tag
-    pub fn clone_tag(&self) -> Self {
-        self.clone()
     }
 }

@@ -1,4 +1,4 @@
-use crate::{Event, Timestamp, ID};
+use crate::Event;
 use std::cmp::Ordering;
 use url::Url;
 
@@ -15,11 +15,11 @@ pub fn is_valid_32_byte_hex(s: &str) -> bool {
     if s.len() != 64 {
         return false;
     }
-    
+
     if !crate::helpers::is_lower_hex(s) {
         return false;
     }
-    
+
     hex::decode(s).is_ok()
 }
 

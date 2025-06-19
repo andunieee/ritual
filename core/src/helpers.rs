@@ -1,5 +1,4 @@
-use crate::{ID, PubKey, Timestamp};
-use std::collections::HashMap;
+use crate::{PubKey, Timestamp, ID};
 use std::sync::Mutex;
 
 /// Maximum number of named locks
@@ -7,16 +6,56 @@ const MAX_LOCKS: usize = 50;
 
 /// Pool of named mutexes for synchronization
 static NAMED_MUTEX_POOL: [Mutex<()>; MAX_LOCKS] = [
-    Mutex::new(()), Mutex::new(()), Mutex::new(()), Mutex::new(()), Mutex::new(()),
-    Mutex::new(()), Mutex::new(()), Mutex::new(()), Mutex::new(()), Mutex::new(()),
-    Mutex::new(()), Mutex::new(()), Mutex::new(()), Mutex::new(()), Mutex::new(()),
-    Mutex::new(()), Mutex::new(()), Mutex::new(()), Mutex::new(()), Mutex::new(()),
-    Mutex::new(()), Mutex::new(()), Mutex::new(()), Mutex::new(()), Mutex::new(()),
-    Mutex::new(()), Mutex::new(()), Mutex::new(()), Mutex::new(()), Mutex::new(()),
-    Mutex::new(()), Mutex::new(()), Mutex::new(()), Mutex::new(()), Mutex::new(()),
-    Mutex::new(()), Mutex::new(()), Mutex::new(()), Mutex::new(()), Mutex::new(()),
-    Mutex::new(()), Mutex::new(()), Mutex::new(()), Mutex::new(()), Mutex::new(()),
-    Mutex::new(()), Mutex::new(()), Mutex::new(()), Mutex::new(()), Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
+    Mutex::new(()),
 ];
 
 /// Get a named lock for synchronization
@@ -63,7 +102,7 @@ pub fn similar_public_key(a: &[PubKey], b: &[PubKey]) -> bool {
 pub fn escape_string(s: &str) -> String {
     let mut result = String::with_capacity(s.len() + 2);
     result.push('"');
-    
+
     for c in s.chars() {
         match c {
             '"' => result.push_str("\\\""),
@@ -79,7 +118,7 @@ pub fn escape_string(s: &str) -> String {
             c => result.push(c),
         }
     }
-    
+
     result.push('"');
     result
 }
@@ -89,14 +128,14 @@ pub fn extract_sub_id(json_str: &str) -> Option<String> {
     // Look for "EVENT" pattern
     let start = json_str.find("\"EVENT\"")?;
     let remaining = &json_str[start + 7..];
-    
+
     // Find the next quote
     let quote_start = remaining.find('"')?;
     let remaining = &remaining[quote_start + 1..];
-    
+
     // Find the ending quote
     let quote_end = remaining.find('"')?;
-    
+
     Some(remaining[..quote_end].to_string())
 }
 
@@ -104,10 +143,10 @@ pub fn extract_sub_id(json_str: &str) -> Option<String> {
 pub fn extract_event_id(json_str: &str) -> Option<ID> {
     let start = json_str.find("\"id\"")?;
     let remaining = &json_str[start + 4..];
-    
+
     let quote_start = remaining.find('"')?;
     let id_str = &remaining[quote_start + 1..quote_start + 1 + 64];
-    
+
     if id_str.len() == 64 {
         ID::from_hex(id_str).ok()
     } else {
@@ -119,10 +158,10 @@ pub fn extract_event_id(json_str: &str) -> Option<ID> {
 pub fn extract_event_pubkey(json_str: &str) -> Option<PubKey> {
     let start = json_str.find("\"pubkey\"")?;
     let remaining = &json_str[start + 8..];
-    
+
     let quote_start = remaining.find('"')?;
     let pk_str = &remaining[quote_start + 1..quote_start + 1 + 64];
-    
+
     if pk_str.len() == 64 {
         PubKey::from_hex(pk_str).ok()
     } else {
@@ -134,12 +173,12 @@ pub fn extract_event_pubkey(json_str: &str) -> Option<PubKey> {
 pub fn extract_d_tag(json_str: &str) -> Option<String> {
     let start = json_str.find("[\"d\"")?;
     let remaining = &json_str[start + 4..];
-    
+
     let quote_start = remaining.find('"')?;
     let remaining = &remaining[quote_start + 1..];
-    
+
     let quote_end = remaining.find('"')?;
-    
+
     Some(remaining[..quote_end].to_string())
 }
 
@@ -147,7 +186,7 @@ pub fn extract_d_tag(json_str: &str) -> Option<String> {
 pub fn extract_timestamp(json_str: &str) -> Option<Timestamp> {
     let start = json_str.find("\"created_at\"")?;
     let remaining = &json_str[start + 12..];
-    
+
     // Find the next number
     let mut num_start = None;
     for (i, c) in remaining.char_indices() {
@@ -156,10 +195,10 @@ pub fn extract_timestamp(json_str: &str) -> Option<Timestamp> {
             break;
         }
     }
-    
+
     let num_start = num_start?;
     let remaining = &remaining[num_start..];
-    
+
     // Find the end of the number
     let mut num_end = remaining.len();
     for (i, c) in remaining.char_indices() {
@@ -168,14 +207,15 @@ pub fn extract_timestamp(json_str: &str) -> Option<Timestamp> {
             break;
         }
     }
-    
+
     let num_str = &remaining[..num_end];
     num_str.parse::<i64>().ok().map(Timestamp::from)
 }
 
 /// Check if string is lowercase hex
 pub fn is_lower_hex(s: &str) -> bool {
-    s.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    s.chars()
+        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
 /// Convert subscription ID to serial number

@@ -19,3 +19,4 @@ futures = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 dashmap = { workspace = true }
+nonempty = { workspace = true }

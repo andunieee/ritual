@@ -1,39 +1,37 @@
 //! # rnostr-core
-//! 
+//!
 //! Core Nostr protocol types and utilities.
-//! 
+//!
 //! This library provides types and utilities for working with the Nostr protocol,
 //! including events, filters, relays, and connections.
 
-pub mod types;
+pub mod envelopes;
 pub mod event;
+pub mod event_template;
 pub mod filter;
-pub mod keys;
-pub mod timestamp;
-pub mod tags;
-pub mod signature;
 pub mod helpers;
-pub mod utils;
+pub mod keys;
 pub mod normalize;
 pub mod pointers;
-pub mod subscription;
-pub mod connection;
-pub mod envelopes;
-pub mod relay;
 pub mod pool;
+pub mod relay;
+pub mod subscription;
+pub mod tags;
+pub mod timestamp;
+pub mod types;
+pub mod utils;
 
 // Re-export commonly used types
-pub use types::*;
 pub use event::Event;
 pub use filter::Filter;
-pub use keys::{SecretKey, generate};
-pub use timestamp::Timestamp;
+pub use keys::SecretKey;
+pub use pointers::{EntityPointer, EventPointer, Pointer, ProfilePointer};
+pub use pool::{DirectedFilter, Pool, PoolOptions, PublishResult};
+pub use relay::Relay;
+pub use subscription::{ReplaceableKey, Subscription, SubscriptionOptions};
 pub use tags::{Tag, Tags};
-pub use pointers::{Pointer, ProfilePointer, EventPointer, EntityPointer};
-pub use subscription::{Subscription, SubscriptionOptions, ReplaceableKey};
-pub use connection::Connection;
-pub use relay::{Relay, RelayOptions};
-pub use pool::{Pool, PoolOptions, PublishResult, DirectedFilter};
+pub use timestamp::Timestamp;
+pub use types::*;
 
 /// Result type used throughout the library
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;

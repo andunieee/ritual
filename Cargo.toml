@@ -24,3 +24,4 @@ tracing = "0.1"
 rand = "0.8"
 bytes = "1.0"
 dashmap = "5.5"
+nonempty = { version = "0.11.0", features = ["serialize"] }

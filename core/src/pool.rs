@@ -1,25 +1,22 @@
-use crate::{Event, Filter, Relay, RelayEvent, RelayOptions, Result, SubscriptionOptions};
+use crate::{Event, Filter, Relay, RelayEvent, Result, SubscriptionOptions};
 use dashmap::DashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Mutex};
 
 /// pool manages connections to multiple relays
 pub struct Pool {
-    relays: Arc<DashMap<String, Arc<Relay>>>,
-    relay_options: RelayOptions,
+    relays: Arc<DashMap<String, Arc<Mutex<Relay>>>>,
     penalty_box: Option<Arc<DashMap<String, (u16, u32)>>>, // (failures, remaining_seconds)
 }
 
 #[derive(Default)]
 pub struct PoolOptions {
     pub penalty_box: bool,
-    pub relay_options: RelayOptions,
 }
 
 pub struct PublishResult {
     pub error: Option<String>,
     pub relay_url: String,
-    pub relay: Option<Arc<Relay>>,
 }
 
 pub struct DirectedFilter {
@@ -37,13 +34,12 @@ impl Pool {
 
         Self {
             relays: Arc::new(DashMap::new()),
-            relay_options: opts.relay_options,
             penalty_box,
         }
     }
 
     /// get or create a relay connection to the given url
-    pub async fn ensure_relay(&self, url: &str) -> Result<Arc<Relay>> {
+    pub async fn ensure_relay(&self, url: &str) -> Result<Arc<Mutex<Relay>>> {
         let normalized_url = crate::normalize::normalize_url(url)?;
 
         // check penalty box
@@ -63,38 +59,31 @@ impl Pool {
 
         // create new relay connection
         let (on_close, handle_close) = oneshot::channel::<String>();
-        let new_opts = RelayOptions {
-            on_close: Some(on_close),
-            ..self.relay_options
-        };
+        let nm_ = normalized_url.clone();
+        let relays_map = self.relays.clone();
         tokio::spawn(async move {
             match handle_close.await {
                 Ok(reason) => {
-                    println!(
-                        "[{}] relay connection closed: {}",
-                        normalized_url.as_str(),
-                        reason
-                    );
+                    println!("[{}] relay connection closed: {}", nm_.as_str(), reason);
 
                     // the relay connection will be dropped from the map if it disconnects
-                    self.relays.remove(normalized_url.as_str());
+                    relays_map.remove(nm_.as_str());
                 }
                 Err(err) => {
                     println!(
                         "got an error from the handle_close oneshot for {}: {}",
-                        normalized_url.as_str(),
+                        nm_.as_str(),
                         err
                     );
                 }
             }
         });
 
-        match Relay::connect(normalized_url.to_owned(), new_opts).await {
+        match Relay::connect(normalized_url.to_owned(), Some(on_close)).await {
             Ok(relay) => {
-                let relay = Arc::new(relay);
-                self.relays
-                    .insert(normalized_url.to_string(), relay.clone());
-                Ok(relay)
+                let r = Arc::new(Mutex::new(relay));
+                self.relays.insert(normalized_url.to_string(), r.clone());
+                Ok(r)
             }
             Err(err) => {
                 // add to penalty box
@@ -126,22 +115,19 @@ impl Pool {
 
             tokio::spawn(async move {
                 let result = match pool.ensure_relay(&url).await {
-                    Ok(relay) => match relay.publish(event).await {
+                    Ok(relay) => match relay.lock().await.publish(event).await {
                         Ok(_) => PublishResult {
                             error: None,
                             relay_url: url.clone(),
-                            relay: Some(relay),
                         },
                         Err(err) => PublishResult {
                             error: Some(err.to_string()),
                             relay_url: url.clone(),
-                            relay: Some(relay),
                         },
                     },
                     Err(err) => PublishResult {
                         error: Some(err.to_string()),
                         relay_url: url.clone(),
-                        relay: None,
                     },
                 };
 
@@ -152,7 +138,7 @@ impl Pool {
         rx
     }
 
-    /// Subscribe to events from multiple relays
+    /// subscribe to events from multiple relays
     pub async fn subscribe_many(
         &self,
         urls: Vec<String>,
@@ -169,7 +155,7 @@ impl Pool {
 
             tokio::spawn(async move {
                 if let Ok(relay) = pool.ensure_relay(&url).await {
-                    if let Ok(subscription) = relay.subscribe(filter, opts).await {
+                    if let Ok(subscription) = relay.lock().await.subscribe(filter, opts).await {
                         // Handle events from this subscription
                         // This is a simplified version - full implementation would handle the subscription properly
                     }
@@ -181,11 +167,10 @@ impl Pool {
     }
 
     /// close the pool
-    pub async fn close(&self) {
+    pub async fn close(self) {
         for relay in self.relays.iter() {
             relay.close();
         }
-        drop(self);
     }
 }
 
@@ -193,7 +178,6 @@ impl Clone for Pool {
     fn clone(&self) -> Self {
         Self {
             relays: self.relays.clone(),
-            relay_options: RelayOptions::default(),
             penalty_box: self.penalty_box.clone(),
         }
     }

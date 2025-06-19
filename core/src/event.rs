@@ -1,9 +1,10 @@
 use crate::{Kind, PubKey, Signature, Tags, Timestamp, ID};
+use secp256k1::{schnorr, Message, XOnlyPublicKey, SECP256K1};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 
-/// Represents a Nostr event
+/// represents a signed nostr event
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     pub id: ID,
@@ -16,40 +17,40 @@ pub struct Event {
 }
 
 impl Event {
-    /// Create a new event
-    pub fn new(
-        pubkey: PubKey,
-        created_at: Timestamp,
-        kind: Kind,
-        tags: Tags,
-        content: String,
-    ) -> Self {
-        let mut event = Self {
-            id: ID::from_bytes([0; 32]),
-            pubkey,
-            created_at,
-            kind,
-            tags,
-            content,
-            sig: Signature::from_bytes([0; 64]),
+    pub fn verify_signature(&self) -> bool {
+        let pubkey = match XOnlyPublicKey::from_slice(self.pubkey.as_bytes()) {
+            Ok(pk) => pk,
+            Err(_) => return false,
         };
-        event.id = event.get_id();
-        event
+
+        let signature = match schnorr::Signature::from_slice(self.sig.as_bytes()) {
+            Ok(sig) => sig,
+            Err(_) => return false,
+        };
+
+        // hash the serialized event
+        let hash = Sha256::digest(&self.serialize());
+        let message = match Message::from_digest_slice(&hash) {
+            Ok(msg) => msg,
+            Err(_) => return false,
+        };
+
+        // verify the signature
+        SECP256K1
+            .verify_schnorr(&signature, &message, &pubkey)
+            .is_ok()
     }
 
-    /// Get the event ID by serializing and hashing
-    pub fn get_id(&self) -> ID {
+    /// check if the event ID matches the computed ID
+    pub fn check_id(&self) -> bool {
         let serialized = self.serialize();
         let hash = Sha256::digest(&serialized);
-        ID::from_bytes(hash.into())
+        let id = ID::from_bytes(hash.into());
+
+        id == self.id
     }
 
-    /// Check if the event ID matches the computed ID
-    pub fn check_id(&self) -> bool {
-        self.get_id() == self.id
-    }
-
-    /// Serialize the event for ID computation
+    /// serialize the event for ID computation
     pub fn serialize(&self) -> Vec<u8> {
         let array = serde_json::json!([
             0,
@@ -67,7 +68,7 @@ impl fmt::Display for Event {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match serde_json::to_string(self) {
             Ok(json) => write!(f, "{}", json),
-            Err(_) => write!(f, "Event({})", self.id),
+            Err(err) => write!(f, "Event({} >> {})", self.id, err),
         }
     }
 }
