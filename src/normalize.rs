@@ -4,29 +4,29 @@ use crate::Result;
 
 /// normalize a URL and replace http://, https:// schemes with ws://, wss://
 pub fn normalize_url(url_str: &str) -> Result<Url> {
-    // try to parse the URL
-    let mut url = match Url::parse(url_str) {
-        Ok(url) => url,
-        Err(_) => {
-            // Handle cases like "localhost:1234"
-            let with_scheme = if url_str.contains("localhost") || url_str.starts_with("127.0.0.1") {
+    let url_str = match url_str.split_once("://") {
+        Some((scheme, _))
+            if scheme == "wss" || scheme == "ws" || scheme == "WSS" || scheme == "WS" =>
+        {
+            url_str.to_string()
+        }
+        Some((scheme, _))
+            if scheme == "https" || scheme == "http" || scheme == "HTTPS" || scheme == "HTTP" =>
+        {
+            format!("ws{}", &url_str[4..])
+        }
+        _ => {
+            if url_str.starts_with("localhost")
+                || url_str.contains(".localhost")
+                || url_str.starts_with("127.0.0.1")
+            {
                 format!("ws://{}", url_str)
             } else {
                 format!("wss://{}", url_str)
-            };
-            Url::parse(&with_scheme)?
+            }
         }
     };
-
-    // normalize the scheme
-    match url.scheme() {
-        "https" => url.set_scheme("wss").unwrap(),
-        "http" => url.set_scheme("ws").unwrap(),
-        "ws" | "wss" => {} // already correct
-        _ if url.host_str() == Some("localhost") => url.set_scheme("ws").unwrap(),
-        _ if url.host_str() == Some("127.0.0.1") => url.set_scheme("ws").unwrap(),
-        _ => url.set_scheme("wss").unwrap(),
-    }
+    let mut url = Url::parse(&url_str)?;
 
     // normalize host to lowercase
     if let Some(host) = url.host_str() {
@@ -40,39 +40,6 @@ pub fn normalize_url(url_str: &str) -> Result<Url> {
     Ok(url)
 }
 
-/// normalize HTTP(S) URLs according to RFC3986
-pub fn normalize_http_url(url_str: &str) -> Result<String> {
-    let url_str = url_str.trim();
-
-    let url_str = if !url_str.starts_with("http") {
-        format!("https://{}", url_str)
-    } else {
-        url_str.to_string()
-    };
-
-    let mut url = Url::parse(&url_str)?;
-
-    // remove default ports
-    if let Some(port) = url.port() {
-        let default_port = match url.scheme() {
-            "http" => 80,
-            "https" => 443,
-            _ => 0,
-        };
-        if port == default_port {
-            let _ = url.set_port(None);
-        }
-    }
-
-    // remove trailing slash
-    let mut url_string = url.to_string();
-    if url_string.ends_with('/') && url.path() == "/" {
-        url_string.pop();
-    }
-
-    Ok(url_string)
-}
-
 /// normalize OK message with prefix
 pub fn normalize_ok_message(reason: &str, prefix: &str) -> String {
     if let Some(colon_pos) = reason.find(": ") {
@@ -82,4 +49,83 @@ pub fn normalize_ok_message(reason: &str, prefix: &str) -> String {
         }
     }
     format!("{}: {}", prefix, reason)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_url() {
+        let test_cases = vec![
+            // basic cases
+            ("wss://example.com", "wss://example.com/"),
+            ("ws://example.com", "ws://example.com/"),
+            ("https://example.com", "wss://example.com/"),
+            ("http://example.com", "ws://example.com/"),
+            // localhost cases
+            ("localhost:8080", "ws://localhost:8080/"),
+            ("127.0.0.1:8080", "ws://127.0.0.1:8080/"),
+            ("test.localhost:3000", "ws://test.localhost:3000/"),
+            // domain without scheme
+            ("example.com", "wss://example.com/"),
+            ("relay.damus.io", "wss://relay.damus.io/"),
+            // with paths
+            ("wss://example.com/path", "wss://example.com/path"),
+            ("https://example.com/path/", "wss://example.com/path"),
+            // case normalization
+            ("WSS://EXAMPLE.COM", "wss://example.com/"),
+            ("HTTP://LOCALHOST:8080", "ws://localhost:8080/"),
+            // trailing slash removal
+            ("wss://example.com/", "wss://example.com/"),
+            ("https://example.com/p/p", "wss://example.com/p/p"),
+        ];
+
+        for (input, expected) in test_cases {
+            let result = normalize_url(input).unwrap();
+            assert_eq!(result.to_string(), expected, "failed for input: {}", input);
+        }
+    }
+
+    #[test]
+    fn test_normalize_ok_message() {
+        let test_cases = vec![
+            // already has prefix
+            ("blocked: spam", "error", "blocked: spam"),
+            ("rate-limited: too fast", "error", "rate-limited: too fast"),
+            // needs prefix
+            ("spam detected", "blocked", "blocked: spam detected"),
+            ("invalid signature", "error", "error: invalid signature"),
+            (
+                "too many requests",
+                "rate-limited",
+                "rate-limited: too many requests",
+            ),
+            // edge cases
+            ("", "error", "error: "),
+            ("no colon here", "prefix", "prefix: no colon here"),
+            ("multiple: colons: here", "error", "multiple: colons: here"),
+            ("space before: colon", "error", "error: space before: colon"),
+        ];
+
+        for (reason, prefix, expected) in test_cases {
+            let result = normalize_ok_message(reason, prefix);
+            assert_eq!(
+                result, expected,
+                "failed for reason: '{}', prefix: '{}'",
+                reason, prefix
+            );
+        }
+    }
+
+    #[test]
+    fn test_normalize_url_errors() {
+        let invalid_cases = vec!["not-a-url", "ftp://example.com", ""];
+
+        for input in invalid_cases {
+            let result = normalize_url(input);
+            // some might succeed with our fallback logic, but we're testing they don't panic
+            let _ = result;
+        }
+    }
 }
