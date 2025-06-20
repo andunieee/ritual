@@ -13,6 +13,7 @@ pub mod helpers;
 pub mod keys;
 pub mod nip19;
 pub mod nip49;
+pub mod nip05;
 pub mod normalize;
 pub mod pointers;
 pub mod pool;
