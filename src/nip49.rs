@@ -3,7 +3,7 @@
 //! This module implements NIP-49 for encrypting and decrypting private keys
 //! using a password-based key derivation function (scrypt) and XChaCha20-Poly1305.
 
-use crate::{Result, SecretKey};
+use crate::SecretKey;
 use bech32::{self, FromBase32, ToBase32};
 use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
@@ -11,7 +11,34 @@ use chacha20poly1305::{
 };
 use rand::{thread_rng, RngCore};
 use scrypt::{scrypt, Params};
+use thiserror::Error;
 use unicode_normalization::UnicodeNormalization;
+
+#[derive(Error, Debug)]
+pub enum Nip49Error {
+    #[error("bech32 encoding/decoding error")]
+    Bech32(#[from] bech32::Error),
+    #[error("expected prefix ncryptsec")]
+    InvalidPrefix,
+    #[error("invalid data length")]
+    InvalidDataLength,
+    #[error("expected version 0x02, got {0:#x}")]
+    InvalidVersion(u8),
+    #[error("encryption failed: {0}")]
+    EncryptionFailed(String),
+    #[error("decryption failed: {0}")]
+    DecryptionFailed(String),
+    #[error("invalid decrypted key length")]
+    InvalidKeyLength,
+    #[error("scrypt parameter error")]
+    ScryptParams(#[from] scrypt::errors::InvalidParams),
+    #[error("scrypt operation error")]
+    ScryptOperation(#[from] scrypt::errors::InvalidOutputLen),
+    #[error("invalid key length for cipher")]
+    InvalidCipherKeyLength,
+}
+
+pub type Result<T> = std::result::Result<T, Nip49Error>;
 
 /// key security byte values
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,7 +89,8 @@ pub fn encrypt(
     let ad = [ksb.into()];
     concat[2 + 16 + 24] = ad[0];
 
-    let cipher = XChaCha20Poly1305::new_from_slice(&key)?;
+    let cipher = XChaCha20Poly1305::new_from_slice(&key)
+        .map_err(|_| Nip49Error::InvalidCipherKeyLength)?;
     let xnonce = XNonce::from_slice(&nonce);
     let ciphertext = cipher
         .encrypt(
@@ -72,7 +100,7 @@ pub fn encrypt(
                 aad: &ad,
             },
         )
-        .map_err(|err| format!("encryption failed: {}", err))?;
+        .map_err(|err| Nip49Error::EncryptionFailed(err.to_string()))?;
 
     concat[2 + 16 + 24 + 1..].copy_from_slice(&ciphertext);
 
@@ -85,18 +113,18 @@ pub fn decrypt(bech32_string: &str, password: &str) -> Result<SecretKey> {
     let (hrp, data, _variant) = bech32::decode(bech32_string)?;
 
     if hrp != "ncryptsec" {
-        return Err("expected prefix ncryptsec".into());
+        return Err(Nip49Error::InvalidPrefix);
     }
 
     let data = Vec::<u8>::from_base32(&data)?;
 
     if data.len() < 91 {
-        return Err("invalid data length".into());
+        return Err(Nip49Error::InvalidDataLength);
     }
 
     let version = data[0];
     if version != 0x02 {
-        return Err(format!("expected version 0x02, got {:#x}", version).into());
+        return Err(Nip49Error::InvalidVersion(version));
     }
 
     let logn = data[1];
@@ -108,7 +136,8 @@ pub fn decrypt(bech32_string: &str, password: &str) -> Result<SecretKey> {
 
     let key = get_key(password, salt, n)?;
 
-    let cipher = XChaCha20Poly1305::new_from_slice(&key)?;
+    let cipher = XChaCha20Poly1305::new_from_slice(&key)
+        .map_err(|_| Nip49Error::InvalidCipherKeyLength)?;
     let xnonce = XNonce::from_slice(nonce);
     let decrypted = cipher
         .decrypt(
@@ -118,10 +147,10 @@ pub fn decrypt(bech32_string: &str, password: &str) -> Result<SecretKey> {
                 aad: ad,
             },
         )
-        .map_err(|err| format!("decryption failed: {}", err))?;
+        .map_err(|err| Nip49Error::DecryptionFailed(err.to_string()))?;
 
     if decrypted.len() != 32 {
-        return Err("invalid decrypted key length".into());
+        return Err(Nip49Error::InvalidKeyLength);
     }
 
     Ok(SecretKey::from_bytes(decrypted.try_into().unwrap()))

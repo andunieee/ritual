@@ -1,7 +1,28 @@
-use crate::{Event, Filter, Result, ID};
+use crate::{Event, Filter, ID};
 use nonempty::NonEmpty;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum EnvelopeError {
+    #[error("empty message")]
+    EmptyMessage,
+    #[error("invalid label")]
+    InvalidLabel,
+    #[error("invalid {0} envelope")]
+    InvalidEnvelope(String),
+    #[error("unknown envelope label: {0}")]
+    UnknownLabel(String),
+    #[error("JSON parsing error")]
+    Json(#[from] serde_json::Error),
+    #[error("hex decoding error")]
+    Hex(#[from] hex::FromHexError),
+    #[error("ID parsing error")]
+    IdParsing(#[from] crate::types::IDError),
+}
+
+pub type Result<T> = std::result::Result<T, EnvelopeError>;
 
 /// nostr message envelopes ("commands")
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,10 +135,10 @@ pub struct AuthChallengeEnvelope {
 pub fn parse_message(message: &str) -> Result<Envelope> {
     let arr: Vec<Value> = serde_json::from_str(message)?;
     if arr.is_empty() {
-        return Err("empty message".into());
+        return Err(EnvelopeError::EmptyMessage);
     }
 
-    let label = arr[0].as_str().ok_or("invalid label")?;
+    let label = arr[0].as_str().ok_or(EnvelopeError::InvalidLabel)?;
 
     match label {
         "EVENT" => {
@@ -129,13 +150,13 @@ pub fn parse_message(message: &str) -> Result<Envelope> {
                     subscription_id: arr[1].as_str().unwrap_or("").to_string(),
                     event: serde_json::from_value(arr[2].clone())?,
                 }),
-                _ => return Err("invalid EVENT envelope".into()),
+                _ => return Err(EnvelopeError::InvalidEnvelope("EVENT".to_string())),
             };
             Ok(envelope)
         }
         "REQ" => {
             if arr.len() < 3 {
-                return Err("invalid REQ envelope".into());
+                return Err(EnvelopeError::InvalidEnvelope("REQ".to_string()));
             }
             let mut filters = Vec::with_capacity(arr.len() - 2);
             for x in 2.. {
@@ -150,11 +171,11 @@ pub fn parse_message(message: &str) -> Result<Envelope> {
         }
         "COUNT" => {
             if arr.len() < 3 {
-                return Err("invalid COUNT envelope".into());
+                return Err(EnvelopeError::InvalidEnvelope("COUNT".to_string()));
             }
             let subscription_id = arr[1].as_str().unwrap_or("").to_string();
 
-            // Try to parse as count result first
+            // try to parse as count result first
             let mut envelope = CountEnvelope {
                 subscription_id,
                 filter: None,
@@ -174,7 +195,7 @@ pub fn parse_message(message: &str) -> Result<Envelope> {
                     }
                 }
             } else {
-                // Parse as filter
+                // parse as filter
                 envelope.filter = Some(serde_json::from_value(arr[2].clone())?);
             }
 
@@ -182,14 +203,14 @@ pub fn parse_message(message: &str) -> Result<Envelope> {
         }
         "NOTICE" => {
             if arr.len() < 2 {
-                return Err("invalid NOTICE envelope".into());
+                return Err(EnvelopeError::InvalidEnvelope("NOTICE".to_string()));
             }
             let envelope = NoticeEnvelope(arr[1].as_str().unwrap_or("").to_string());
             Ok(Envelope::Notice(envelope))
         }
         "EOSE" => {
             if arr.len() < 2 {
-                return Err("invalid EOSE envelope".into());
+                return Err(EnvelopeError::InvalidEnvelope("EOSE".to_string()));
             }
             let envelope = EOSEEnvelope {
                 subscription_id: arr[1].as_str().unwrap_or("").to_string(),
@@ -198,7 +219,7 @@ pub fn parse_message(message: &str) -> Result<Envelope> {
         }
         "CLOSE" => {
             if arr.len() < 2 {
-                return Err("invalid CLOSE envelope".into());
+                return Err(EnvelopeError::InvalidEnvelope("CLOSE".to_string()));
             }
             let envelope = CloseEnvelope {
                 subscription_id: arr[1].as_str().unwrap_or("").to_string(),
@@ -207,7 +228,7 @@ pub fn parse_message(message: &str) -> Result<Envelope> {
         }
         "CLOSED" => {
             if arr.len() < 3 {
-                return Err("invalid CLOSED envelope".into());
+                return Err(EnvelopeError::InvalidEnvelope("CLOSED".to_string()));
             }
             let envelope = ClosedEnvelope {
                 subscription_id: arr[1].as_str().unwrap_or("").to_string(),
@@ -217,7 +238,7 @@ pub fn parse_message(message: &str) -> Result<Envelope> {
         }
         "OK" => {
             if arr.len() < 4 {
-                return Err("invalid OK envelope".into());
+                return Err(EnvelopeError::InvalidEnvelope("OK".to_string()));
             }
             let envelope = OKEnvelope {
                 event_id: ID::from_hex(arr[1].as_str().unwrap_or(""))?,
@@ -228,7 +249,7 @@ pub fn parse_message(message: &str) -> Result<Envelope> {
         }
         "AUTH" => {
             if arr.len() < 2 {
-                return Err("invalid AUTH envelope".into());
+                return Err(EnvelopeError::InvalidEnvelope("AUTH".to_string()));
             }
 
             let envelope = if arr[1].is_object() {
@@ -242,6 +263,6 @@ pub fn parse_message(message: &str) -> Result<Envelope> {
             };
             Ok(envelope)
         }
-        _ => Err(format!("unknown envelope label: {}", label).into()),
+        _ => Err(EnvelopeError::UnknownLabel(label.to_string())),
     }
 }

@@ -1,6 +1,31 @@
 use serde::{de::Error, Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 use url::Url;
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum IDError {
+    #[error("invalid hex encoding")]
+    InvalidHex(#[from] hex::FromHexError),
+    #[error("invalid ID length: expected 32 bytes, got {0}")]
+    InvalidLength(usize),
+}
+
+#[derive(Error, Debug)]
+pub enum PubKeyError {
+    #[error("invalid hex encoding")]
+    InvalidHex(#[from] hex::FromHexError),
+    #[error("invalid public key length: expected 32 bytes, got {0}")]
+    InvalidLength(usize),
+}
+
+#[derive(Error, Debug)]
+pub enum SignatureError {
+    #[error("invalid hex encoding")]
+    InvalidHex(#[from] hex::FromHexError),
+    #[error("invalid signature length: expected 64 bytes, got {0}")]
+    InvalidLength(usize),
+}
 
 /// A 32-byte event ID
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -18,7 +43,10 @@ impl ID {
     }
 
     /// Create ID from hex string
-    pub fn from_hex(hex_str: &str) -> Result<Self, hex::FromHexError> {
+    pub fn from_hex(hex_str: &str) -> Result<Self, IDError> {
+        if hex_str.len() != 64 {
+            return Err(IDError::InvalidLength(hex_str.len() / 2));
+        }
         let mut bytes = [0u8; 32];
         hex::decode_to_slice(hex_str, &mut bytes)?;
         Ok(Self(bytes))
@@ -71,7 +99,10 @@ impl PubKey {
     }
 
     /// Create public key from hex string
-    pub fn from_hex(hex_str: &str) -> Result<Self, hex::FromHexError> {
+    pub fn from_hex(hex_str: &str) -> Result<Self, PubKeyError> {
+        if hex_str.len() != 64 {
+            return Err(PubKeyError::InvalidLength(hex_str.len() / 2));
+        }
         let mut bytes = [0u8; 32];
         hex::decode_to_slice(hex_str, &mut bytes)?;
         Ok(Self(bytes))
@@ -124,7 +155,10 @@ impl Signature {
     }
 
     /// Create signature from hex string
-    pub fn from_hex(hex_str: &str) -> Result<Self, hex::FromHexError> {
+    pub fn from_hex(hex_str: &str) -> Result<Self, SignatureError> {
+        if hex_str.len() != 128 {
+            return Err(SignatureError::InvalidLength(hex_str.len() / 2));
+        }
         let mut bytes = [0u8; 64];
         hex::decode_to_slice(hex_str, &mut bytes)?;
         Ok(Self(bytes))

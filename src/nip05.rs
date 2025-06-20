@@ -3,11 +3,30 @@
 //! This module implements NIP-05 for verifying and querying Nostr identities
 //! using DNS-based identifiers.
 
-use crate::{ProfilePointer, PubKey, Result};
+use crate::{ProfilePointer, PubKey};
 use regex::Regex;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum Nip05Error {
+    #[error("invalid identifier")]
+    InvalidIdentifier,
+    #[error("missing domain")]
+    MissingDomain,
+    #[error("no entry for name '{0}'")]
+    NoEntry(String),
+    #[error("got an invalid public key '{0}'")]
+    InvalidPublicKey(String),
+    #[error("HTTP error: {0}")]
+    Http(#[from] reqwest::Error),
+    #[error("public key parsing error")]
+    PubKeyParsing(#[from] crate::types::PubKeyError),
+}
+
+pub type Result<T> = std::result::Result<T, Nip05Error>;
 
 /// well-known response structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,7 +49,9 @@ pub fn is_valid_identifier(input: &str) -> bool {
 
 /// parse a NIP-05 identifier into name and domain parts
 pub fn parse_identifier(fullname: &str) -> Result<(String, String)> {
-    let captures = NIP05_REGEX.captures(fullname).ok_or("invalid identifier")?;
+    let captures = NIP05_REGEX
+        .captures(fullname)
+        .ok_or(Nip05Error::InvalidIdentifier)?;
 
     let name = captures
         .get(1)
@@ -39,7 +60,7 @@ pub fn parse_identifier(fullname: &str) -> Result<(String, String)> {
         .to_string();
     let domain = captures
         .get(2)
-        .ok_or("missing domain")?
+        .ok_or(Nip05Error::MissingDomain)?
         .as_str()
         .to_string();
 
@@ -53,10 +74,10 @@ pub async fn query_identifier(fullname: &str) -> Result<ProfilePointer> {
     let pubkey_hex = result
         .names
         .get(&name)
-        .ok_or_else(|| format!("no entry for name '{}'", name))?;
+        .ok_or_else(|| Nip05Error::NoEntry(name.clone()))?;
 
     let public_key = PubKey::from_hex(pubkey_hex)
-        .map_err(|_| format!("got an invalid public key '{}'", pubkey_hex))?;
+        .map_err(|_| Nip05Error::InvalidPublicKey(pubkey_hex.clone()))?;
 
     let relays = if let Some(relays_map) = &result.relays {
         relays_map.get(pubkey_hex).cloned().unwrap_or_default()
@@ -80,7 +101,9 @@ pub async fn fetch(fullname: &str) -> Result<(WellKnownResponse, String)> {
     let response = client.get(&url).send().await?;
 
     if !response.status().is_success() {
-        return Err(format!("HTTP error: {}", response.status()).into());
+        return Err(Nip05Error::Http(reqwest::Error::from(
+            response.error_for_status().unwrap_err(),
+        )));
     }
 
     let result: WellKnownResponse = response.json().await?;

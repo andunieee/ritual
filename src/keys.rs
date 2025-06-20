@@ -1,4 +1,4 @@
-use crate::{PubKey, Result};
+use crate::PubKey;
 use secp256k1::{
     global::SECP256K1,
     rand::{self, RngCore},
@@ -6,6 +6,19 @@ use secp256k1::{
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum KeyError {
+    #[error("secret key should be at most 64-char hex, got '{0}'")]
+    InvalidLength(String),
+    #[error("invalid hex encoding")]
+    InvalidHex(#[from] hex::FromHexError),
+    #[error("invalid secret key")]
+    InvalidSecretKey,
+}
+
+pub type Result<T> = std::result::Result<T, KeyError>;
 
 /// A 32-byte secret key
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,11 +47,7 @@ impl SecretKey {
         let hex_str = if hex_str.len() < 64 {
             format!("{:0>64}", hex_str)
         } else if hex_str.len() > 64 {
-            return Err(format!(
-                "secret key should be at most 64-char hex, got '{}'",
-                hex_str
-            )
-            .into());
+            return Err(KeyError::InvalidLength(hex_str.to_string()));
         } else {
             hex_str.to_string()
         };
