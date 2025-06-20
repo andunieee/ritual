@@ -24,3 +24,6 @@ bytes = "1.0"
 dashmap = "5.5"
 nonempty = { version = "0.11.0", features = ["serialize"] }
 bech32 = "0.9"
+chacha20poly1305 = "0.10"
+scrypt = "0.11"
+unicode-normalization = "0.1"
