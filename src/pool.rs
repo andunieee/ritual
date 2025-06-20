@@ -1,4 +1,4 @@
-use crate::{Event, Filter, Relay, RelayEvent, Result, SubscriptionOptions};
+use crate::{normalize_url, Event, Filter, Relay, RelayEvent, Result, SubscriptionOptions};
 use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -40,7 +40,7 @@ impl Pool {
 
     /// get or create a relay connection to the given url
     pub async fn ensure_relay(&self, url: &str) -> Result<Arc<Mutex<Relay>>> {
-        let normalized_url = crate::normalize::normalize_url(url)?;
+        let normalized_url = normalize_url(url)?;
 
         // check penalty box
         if let Some(ref penalty_box) = self.penalty_box {

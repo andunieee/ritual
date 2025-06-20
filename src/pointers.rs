@@ -1,4 +1,4 @@
-use crate::{Event, Filter, Kind, PubKey, Tag, TagMap, ID};
+use crate::{helpers::is_valid_relay_url, Event, Filter, Kind, PubKey, Tag, TagMap, ID};
 
 /// Unified pointer enum for all Nostr pointer types
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,7 +23,7 @@ impl ProfilePointer {
         }
 
         let public_key = PubKey::from_hex(&tag[1])?;
-        let relays = if tag.len() > 2 && crate::utils::is_valid_relay_url(&tag[2]) {
+        let relays = if tag.len() > 2 && is_valid_relay_url(&tag[2]) {
             vec![tag[2].clone()]
         } else {
             vec![]
@@ -50,7 +50,7 @@ impl EventPointer {
         }
 
         let id = ID::from_hex(&tag[1])?;
-        let relays = if tag.len() > 2 && crate::utils::is_valid_relay_url(&tag[2]) {
+        let relays = if tag.len() > 2 && is_valid_relay_url(&tag[2]) {
             vec![tag[2].clone()]
         } else {
             vec![]
@@ -99,7 +99,7 @@ impl EntityPointer {
         let public_key = PubKey::from_hex(parts[1])?;
         let identifier = parts[2].to_string();
 
-        let relays = if tag.len() > 2 && crate::utils::is_valid_relay_url(&tag[2]) {
+        let relays = if tag.len() > 2 && is_valid_relay_url(&tag[2]) {
             vec![tag[2].clone()]
         } else {
             vec![]

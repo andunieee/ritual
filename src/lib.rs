@@ -11,24 +11,23 @@ pub mod event_template;
 pub mod filter;
 pub mod helpers;
 pub mod keys;
+pub mod lmdb;
 pub mod nip05;
-pub mod nip11;
-pub mod nip19;
-pub mod nip49;
-pub mod normalize;
 pub mod pointers;
-pub mod pool;
-pub mod relay;
-pub mod subscription;
-pub mod tags;
 pub mod timestamp;
-pub mod types;
-pub mod utils;
 
 // re-export commonly used types
+mod normalize;
+mod pool;
+mod relay;
+mod subscription;
+mod tags;
+mod types;
+
 pub use event::Event;
 pub use filter::Filter;
 pub use keys::SecretKey;
+pub use normalize::*;
 pub use pointers::{EntityPointer, EventPointer, Pointer, ProfilePointer};
 pub use pool::{DirectedFilter, Pool, PoolOptions, PublishResult};
 pub use relay::Relay;

@@ -1,7 +1,7 @@
 use serde::{de::Error, Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
-use url::Url;
 use thiserror::Error;
+use url::Url;
 
 #[derive(Error, Debug)]
 pub enum IDError {
@@ -32,17 +32,19 @@ pub enum SignatureError {
 pub struct ID(pub [u8; 32]);
 
 impl ID {
-    /// Create a new ID from bytes
     pub fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
 
-    /// Get the bytes of the ID
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
 
-    /// Create ID from hex string
+    pub fn as_u64_lossy(&self) -> u64 {
+        let bytes: [u8; 8] = self.0[8..16].try_into().unwrap();
+        u64::from_be_bytes(bytes)
+    }
+
     pub fn from_hex(hex_str: &str) -> Result<Self, IDError> {
         if hex_str.len() != 64 {
             return Err(IDError::InvalidLength(hex_str.len() / 2));
@@ -52,7 +54,6 @@ impl ID {
         Ok(Self(bytes))
     }
 
-    /// Convert to hex string
     pub fn to_hex(&self) -> String {
         hex::encode(self.0)
     }
@@ -83,22 +84,24 @@ impl fmt::Display for ID {
     }
 }
 
-/// A 32-byte public key
+/// a 32-byte public key
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PubKey(pub [u8; 32]);
 
 impl PubKey {
-    /// Create a new public key from bytes
     pub fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
 
-    /// Get the bytes of the public key
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
 
-    /// Create public key from hex string
+    pub fn as_u64_lossy(&self) -> u64 {
+        let bytes: [u8; 8] = self.0[8..16].try_into().unwrap();
+        u64::from_be_bytes(bytes)
+    }
+
     pub fn from_hex(hex_str: &str) -> Result<Self, PubKeyError> {
         if hex_str.len() != 64 {
             return Err(PubKeyError::InvalidLength(hex_str.len() / 2));
@@ -108,7 +111,6 @@ impl PubKey {
         Ok(Self(bytes))
     }
 
-    /// Convert to hex string
     pub fn to_hex(&self) -> String {
         hex::encode(self.0)
     }
