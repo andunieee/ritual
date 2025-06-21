@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use std::fmt;
 
 /// represents an unsigned nostr event
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct EventTemplate {
     pub created_at: Timestamp,
     pub kind: Kind,

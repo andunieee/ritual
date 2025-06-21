@@ -295,7 +295,7 @@ impl LMDBStore {
         // by kind + date
         {
             let mut key = [INDEX_KIND_PREFIX; 1 + 2 + 4];
-            key[1..].copy_from_slice(&(event.kind as u16).to_be_bytes());
+            key[1..1 + 2].copy_from_slice(&(event.kind as u16).to_be_bytes());
             key[1 + 2..].copy_from_slice(&ts_bytes);
             keys.push(IndexKey {
                 db: self.index_kind,
@@ -306,7 +306,7 @@ impl LMDBStore {
         // by pubkey + date
         {
             let mut key = [INDEX_PUBKEY_PREFIX; 1 + 8 + 4];
-            key[1..].copy_from_slice(&event.pubkey.as_bytes()[0..8]);
+            key[1..1 + 8].copy_from_slice(&event.pubkey.as_bytes()[0..8]);
             key[1 + 8..].copy_from_slice(&ts_bytes);
             keys.push(IndexKey {
                 db: self.index_pubkey,
@@ -317,8 +317,8 @@ impl LMDBStore {
         // by pubkey + kind + date
         {
             let mut key = [INDEX_PUBKEY_KIND_PREFIX; 1 + 8 + 2 + 4];
-            key[1..].copy_from_slice(&event.pubkey.as_bytes()[0..8]);
-            key[1 + 8..].copy_from_slice(&(event.kind as u16).to_be_bytes());
+            key[1..1 + 8].copy_from_slice(&event.pubkey.as_bytes()[0..8]);
+            key[1 + 8..1 + 8 + 2].copy_from_slice(&(event.kind as u16).to_be_bytes());
             key[1 + 8 + 2..].copy_from_slice(&ts_bytes);
             keys.push(IndexKey {
                 db: self.index_pubkey_kind,
@@ -337,7 +337,7 @@ impl LMDBStore {
             let hash = s.finish();
 
             let mut key = [INDEX_TAG_PREFIX; 1 + 8 + 4];
-            key[1..].copy_from_slice(hash.to_le_bytes().as_slice());
+            key[1..1 + 8].copy_from_slice(hash.to_le_bytes().as_slice());
             key[1 + 8..].copy_from_slice(&ts_bytes);
 
             keys.push(IndexKey {
@@ -365,4 +365,178 @@ const INDEX_TAG_PREFIX: u8 = 5;
 fn inverted_timestamp_bytes(created_at: &Timestamp) -> [u8; 4] {
     let inverted_timestamp = 0xffffffff - created_at.0;
     inverted_timestamp.to_be_bytes()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{event_template::EventTemplate, Filter, Kind, SecretKey, Timestamp};
+
+    fn sk() -> SecretKey {
+        SecretKey::generate()
+    }
+
+    #[test]
+    fn test_init_and_close() {
+        let temp_dir = std::env::temp_dir().join("lmdb_test_init");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        let store = LMDBStore::init(&temp_dir, None).expect("failed to initialize store");
+        store.close();
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_save_and_query_event() {
+        let temp_dir = std::env::temp_dir().join("lmdb_test_save_query");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        let store = LMDBStore::init(&temp_dir, None).expect("failed to initialize store");
+        let event = EventTemplate {
+            content: "nothing".to_string(),
+            ..Default::default()
+        }
+        .finalize(sk())
+        .unwrap();
+
+        // save the event
+        store.save_event(&event).expect("failed to save event");
+
+        // query all events
+        let filter = Filter::new();
+        let results = store
+            .query_events(&filter, 100)
+            .expect("failed to query events");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, event.id);
+        assert_eq!(results[0].content, event.content);
+
+        store.close();
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_duplicate_event() {
+        let temp_dir = std::env::temp_dir().join("lmdb_test_duplicate");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        let store = LMDBStore::init(&temp_dir, None).expect("failed to initialize store");
+        let event = EventTemplate {
+            content: "nothing".to_string(),
+            ..Default::default()
+        }
+        .finalize(sk())
+        .unwrap();
+
+        // save the event
+        store.save_event(&event).expect("failed to save event");
+
+        // try to save the same event again
+        let result = store.save_event(&event);
+        assert!(matches!(result, Err(LMDBError::DuplicateEvent)));
+
+        store.close();
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_delete_event() {
+        let temp_dir = std::env::temp_dir().join("lmdb_test_delete");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        let store = LMDBStore::init(&temp_dir, None).expect("failed to initialize store");
+        let event = EventTemplate {
+            content: "nothing".to_string(),
+            ..Default::default()
+        }
+        .finalize(sk())
+        .unwrap();
+
+        // save the event
+        store.save_event(&event).expect("failed to save event");
+
+        // verify it exists
+        let filter = Filter::new();
+        let results = store
+            .query_events(&filter, 100)
+            .expect("failed to query events");
+        assert_eq!(results.len(), 1);
+
+        // delete the event
+        store
+            .delete_event(&event.id)
+            .expect("failed to delete event");
+
+        // verify it's gone
+        let results = store
+            .query_events(&filter, 100)
+            .expect("failed to query events");
+        assert_eq!(results.len(), 0);
+
+        store.close();
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_count_events() {
+        let temp_dir = std::env::temp_dir().join("lmdb_test_count");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        let store = LMDBStore::init(&temp_dir, None).expect("failed to initialize store");
+
+        // save multiple events
+        for i in 0..5 {
+            let event = EventTemplate {
+                content: format!("{}", i),
+                created_at: Timestamp(i),
+                ..Default::default()
+            }
+            .finalize(sk())
+            .unwrap();
+            store.save_event(&event).expect("failed to save event");
+        }
+
+        // count all events
+        let filter = Filter::new();
+        let count = store.count_events(&filter).expect("failed to count events");
+        assert_eq!(count, 5);
+
+        store.close();
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_filter_by_kind() {
+        let temp_dir = std::env::temp_dir().join("lmdb_test_filter_kind");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        let store = LMDBStore::init(&temp_dir, None).expect("failed to initialize store");
+
+        // save events with different kinds
+        for i in 0..3 {
+            let event = EventTemplate {
+                content: format!("{}", i),
+                created_at: Timestamp(i),
+                kind: i as Kind,
+                ..Default::default()
+            }
+            .finalize(sk())
+            .unwrap();
+            store.save_event(&event).expect("failed to save event");
+        }
+
+        // filter by kind 1
+        let mut filter = Filter::new();
+        filter.kinds = Some(vec![1]);
+        let results = store
+            .query_events(&filter, 100)
+            .expect("failed to query events");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].kind, 1);
+
+        store.close();
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 }

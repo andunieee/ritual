@@ -49,3 +49,9 @@ impl From<Timestamp> for i64 {
         timestamp.0 as i64
     }
 }
+
+impl Default for Timestamp {
+    fn default() -> Self {
+        Timestamp::now()
+    }
+}
