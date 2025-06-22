@@ -1,42 +1,42 @@
-use crate::{Event, ID, PubKey, TagMap, Timestamp, Kind};
+use crate::{Event, Kind, PubKey, TagMap, Timestamp, ID};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// Filter for querying events
+/// filter for querying events
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Filter {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ids: Option<Vec<ID>>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kinds: Option<Vec<Kind>>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authors: Option<Vec<PubKey>>,
-    
+
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     pub tags: Option<TagMap>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub since: Option<Timestamp>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub until: Option<Timestamp>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub search: Option<String>,
 }
 
 impl Filter {
-    /// Create a new empty filter
+    /// create a new empty filter
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Check if an event matches this filter
+    /// check if an event matches this filter
     pub fn matches(&self, event: &Event) -> bool {
         if !self.matches_ignoring_timestamp_constraints(event) {
             return false;
@@ -57,7 +57,7 @@ impl Filter {
         true
     }
 
-    /// Check if an event matches this filter ignoring timestamp constraints
+    /// check if an event matches this filter ignoring timestamp constraints
     pub fn matches_ignoring_timestamp_constraints(&self, event: &Event) -> bool {
         if let Some(ref ids) = self.ids {
             if !ids.contains(&event.id) {
@@ -88,12 +88,12 @@ impl Filter {
         true
     }
 
-    /// Clone the filter
+    /// clone the filter
     pub fn clone_filter(&self) -> Self {
         self.clone()
     }
 
-    /// Get the theoretical limit of events this filter could return
+    /// get the theoretical limit of events this filter could return
     pub fn get_theoretical_limit(&self) -> usize {
         if let Some(ref ids) = self.ids {
             return ids.len();
@@ -101,7 +101,7 @@ impl Filter {
 
         // TODO: Implement more sophisticated limit calculation
         // based on replaceable events, addressable events, etc.
-        
+
         usize::MAX
     }
 }
@@ -115,7 +115,7 @@ impl fmt::Display for Filter {
     }
 }
 
-/// Check if two filters are equal
+/// check if two filters are equal
 pub fn filter_equal(a: &Filter, b: &Filter) -> bool {
     a.ids == b.ids
         && a.kinds == b.kinds

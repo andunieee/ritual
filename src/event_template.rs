@@ -1,5 +1,5 @@
 use crate::{Event, Kind, PubKey, SecretKey, Signature, Tags, Timestamp, ID};
-use secp256k1::{Keypair, Message, XOnlyPublicKey, SECP256K1};
+use secp256k1::{Keypair, XOnlyPublicKey, SECP256K1};
 use sha2::{Digest, Sha256};
 use std::fmt;
 
@@ -28,13 +28,12 @@ impl EventTemplate {
         let hash = Sha256::digest(&serialized);
 
         // sign the hash
-        let message = Message::from_digest_slice(&hash)?;
-        let signature = SECP256K1.sign_schnorr_no_aux_rand(&message, &keypair);
+        let signature = SECP256K1.sign_schnorr_no_aux_rand(&hash, &keypair);
 
         Ok(Event {
             id: ID::from_bytes(hash.into()),
             pubkey,
-            sig: Signature::from_bytes(signature.serialize()),
+            sig: Signature::from_bytes(signature.to_byte_array()),
             kind: self.kind,
             tags: self.tags,
             created_at: self.created_at,

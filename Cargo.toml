@@ -6,31 +6,28 @@ license = "MIT"
 
 [dependencies]
 tokio = { version = "1.0", features = ["full"] }
-tokio-tungstenite = { version = "0.20", features = ["native-tls"] }
+hyper = { version = "1.6.0", features = ["full"] }
+hyper-tungstenite = "0.18.0"
+futures-util = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-secp256k1 = { version = "0.28", features = ["rand", "recovery", "global-context"] }
-sha2 = "0.10"
+secp256k1 = { version = "0.31.0", features = ["rand", "global-context"] }
 hex = "0.4"
-chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
 url = "2.4"
-futures = "0.3"
 thiserror = "1.0"
-anyhow = "1.0"
-tracing = "0.1"
-rand = "0.8"
-bytes = "1.0"
-dashmap = "5.5"
-nonempty = { version = "0.11.0", features = ["serialize"] }
-chacha20poly1305 = "0.10"
-scrypt = "0.11"
 unicode-normalization = "0.1"
-reqwest = { version = "0.11", features = ["json"] }
-regex = "1.0"
-lazy_static = "1.4"
 heed = "0.20"
-fasthash = "0.4.0"
+dashmap = "5.5"
+fasthash = "0.4"
+lazy_static = "1.4"
+tracing = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+futures = "0.3"
 bech32 = "0.11.0"
+regex = "1.11.1"
+tokio-tungstenite = "0.27.0"
 
 [dev-dependencies]
 tempfile = "3.0"
+reqwest = { version = "0.12.20", features = ["json"] }

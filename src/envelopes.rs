@@ -1,5 +1,4 @@
 use crate::{Event, Filter, ID};
-use nonempty::NonEmpty;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -77,7 +76,7 @@ pub struct OutEventEnvelope {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReqEnvelope {
     pub subscription_id: String,
-    pub filters: NonEmpty<Filter>,
+    pub filters: Vec<Filter>,
 }
 
 /// COUNT envelope
@@ -165,7 +164,7 @@ pub fn parse_message(message: &str) -> Result<Envelope> {
             }
             let envelope = ReqEnvelope {
                 subscription_id: arr[1].as_str().unwrap_or("").to_string(),
-                filters: filters.try_into().unwrap(),
+                filters,
             };
             Ok(Envelope::Req(envelope))
         }

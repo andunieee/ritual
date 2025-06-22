@@ -9,7 +9,7 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
     XChaCha20Poly1305, XNonce,
 };
-use rand::{thread_rng, RngCore};
+use rand::RngCore;
 use scrypt::{scrypt, Params};
 use thiserror::Error;
 use unicode_normalization::UnicodeNormalization;
@@ -72,7 +72,7 @@ pub fn encrypt(
     ksb: KeySecurityByte,
 ) -> Result<String> {
     let mut salt = [0u8; 16];
-    thread_rng().fill_bytes(&mut salt);
+    rand::rng().fill_bytes(&mut salt);
 
     let n = 1u32 << logn;
     let key = get_key(password, &salt, n)?;
@@ -83,14 +83,14 @@ pub fn encrypt(
     concat[2..2 + 16].copy_from_slice(&salt);
 
     let mut nonce = [0u8; 24];
-    thread_rng().fill_bytes(&mut nonce);
+    rand::rng().fill_bytes(&mut nonce);
     concat[2 + 16..2 + 16 + 24].copy_from_slice(&nonce);
 
     let ad = [ksb.into()];
     concat[2 + 16 + 24] = ad[0];
 
-    let cipher = XChaCha20Poly1305::new_from_slice(&key)
-        .map_err(|_| Nip49Error::InvalidCipherKeyLength)?;
+    let cipher =
+        XChaCha20Poly1305::new_from_slice(&key).map_err(|_| Nip49Error::InvalidCipherKeyLength)?;
     let xnonce = XNonce::from_slice(&nonce);
     let ciphertext = cipher
         .encrypt(
@@ -136,8 +136,8 @@ pub fn decrypt(bech32_string: &str, password: &str) -> Result<SecretKey> {
 
     let key = get_key(password, salt, n)?;
 
-    let cipher = XChaCha20Poly1305::new_from_slice(&key)
-        .map_err(|_| Nip49Error::InvalidCipherKeyLength)?;
+    let cipher =
+        XChaCha20Poly1305::new_from_slice(&key).map_err(|_| Nip49Error::InvalidCipherKeyLength)?;
     let xnonce = XNonce::from_slice(nonce);
     let decrypted = cipher
         .decrypt(

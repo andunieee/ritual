@@ -2,6 +2,7 @@ use crate::{envelopes::*, Event, Filter, Result, Subscription, SubscriptionOptio
 use dashmap::DashMap;
 use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt, TryFutureExt};
+use hyper_tungstenite::tungstenite::client::IntoClientRequest;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use tokio::net::TcpStream;
@@ -35,7 +36,7 @@ impl Relay {
         let (write_sender, mut write_receiver) = mpsc::channel(1);
 
         // connect
-        let (ws_stream, _) = connect_async(&url).await?;
+        let (ws_stream, _) = connect_async(url.as_str().into_client_request()?).await?;
         let (conn_write, mut conn_read) = ws_stream.split();
 
         let relay = Self {
@@ -50,8 +51,8 @@ impl Relay {
         // start write queue handler
         let queue_writer = relay.conn_write.clone();
         tokio::spawn(async move {
-            while let Some(req) = write_receiver.recv().await {
-                let _ = queue_writer.lock().await.send(Message::Text(req)).await;
+            while let Some(text) = write_receiver.recv().await {
+                let _ = queue_writer.lock().await.send(Message::text(text)).await;
             }
         });
 
@@ -61,7 +62,12 @@ impl Relay {
             let mut ping_interval = interval(Duration::from_secs(29));
             loop {
                 ping_interval.tick().await;
-                if let Err(err) = ping_writer.lock().await.send(Message::Ping(vec![])).await {
+                if let Err(err) = ping_writer
+                    .lock()
+                    .await
+                    .send(Message::Ping(vec![].into()))
+                    .await
+                {
                     println!("ping to failed: {}", err);
                     break;
                 }
@@ -83,7 +89,11 @@ impl Relay {
                             // message will be handled below
                         }
                         Ok(Message::Ping(_)) => {
-                            let _ = pong_writer.lock().await.send(Message::Pong(vec![])).await;
+                            let _ = pong_writer
+                                .lock()
+                                .await
+                                .send(Message::Pong(vec![].into()))
+                                .await;
                             continue;
                         }
                         Ok(Message::Close(f)) => {

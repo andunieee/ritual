@@ -1,5 +1,5 @@
 use crate::{Kind, PubKey, Signature, Tags, Timestamp, ID};
-use secp256k1::{schnorr, Message, XOnlyPublicKey, SECP256K1};
+use secp256k1::{schnorr, XOnlyPublicKey, SECP256K1};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
@@ -28,17 +28,8 @@ impl Event {
             Err(_) => return false,
         };
 
-        // hash the serialized event
         let hash = Sha256::digest(&self.serialize());
-        let message = match Message::from_digest_slice(&hash) {
-            Ok(msg) => msg,
-            Err(_) => return false,
-        };
-
-        // verify the signature
-        SECP256K1
-            .verify_schnorr(&signature, &message, &pubkey)
-            .is_ok()
+        SECP256K1.verify_schnorr(&signature, &hash, &pubkey).is_ok()
     }
 
     /// check if the event ID matches the computed ID

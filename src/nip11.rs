@@ -23,7 +23,7 @@ pub enum Nip11Error {
 pub type Result<T> = std::result::Result<T, Nip11Error>;
 
 /// relay information document
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RelayInformationDocument {
     #[serde(skip)]
     pub url: String,

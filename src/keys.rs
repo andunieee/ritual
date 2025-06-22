@@ -28,7 +28,7 @@ impl SecretKey {
     /// generate a new random secret key
     pub fn generate() -> Self {
         let mut bytes = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut bytes);
+        rand::rng().fill_bytes(&mut bytes);
         SecretKey(bytes)
     }
 
