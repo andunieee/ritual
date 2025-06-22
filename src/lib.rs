@@ -22,6 +22,7 @@ pub mod timestamp;
 mod normalize;
 mod pool;
 mod relay;
+mod server;
 mod subscription;
 mod tags;
 mod types;

@@ -1389,6 +1389,7 @@ name = "rnostr"
 version = "0.1.0"
 dependencies = [
  "bech32",
+ "bytes",
  "chrono",
  "dashmap",
  "fasthash",
@@ -1396,8 +1397,10 @@ dependencies = [
  "futures-util",
  "heed",
  "hex",
+ "http-body-util",
  "hyper",
  "hyper-tungstenite",
+ "hyper-util",
  "lazy_static",
  "regex",
  "reqwest",
