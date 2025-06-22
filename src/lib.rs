@@ -13,6 +13,8 @@ pub mod helpers;
 pub mod keys;
 pub mod lmdb;
 pub mod nip05;
+pub mod nip11;
+pub mod nip19;
 pub mod pointers;
 pub mod timestamp;
 

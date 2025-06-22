@@ -3,13 +3,13 @@
 //! this module provides encoding and decoding functions for NIP-19 bech32-encoded entities.
 
 use crate::{pointers::*, Kind, PubKey, SecretKey, ID};
-use bech32::{self, FromBase32, ToBase32, Variant};
+use bech32::{Bech32, Hrp};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum Nip19Error {
     #[error("bech32 decoding error")]
-    Bech32(#[from] bech32::Error),
+    Bech32(#[from] bech32::DecodeError),
     #[error("invalid data length: expected {expected}, got {actual}")]
     InvalidLength { expected: usize, actual: usize },
     #[error("no {0} found")]
@@ -45,9 +45,8 @@ pub enum DecodeResult {
 }
 
 /// decode a bech32-encoded NIP-19 string
-pub fn decode(bech32_string: &str) -> Result<(String, DecodeResult)> {
-    let (prefix, data, _variant) = bech32::decode(bech32_string)?;
-    let data = Vec::<u8>::from_base32(&data)?;
+pub fn decode(bech32_string: &str) -> Result<DecodeResult> {
+    let (prefix, data) = bech32::decode(bech32_string)?;
 
     match prefix.as_str() {
         "nsec" => {
@@ -59,10 +58,7 @@ pub fn decode(bech32_string: &str) -> Result<(String, DecodeResult)> {
             }
             let mut bytes = [0u8; 32];
             bytes.copy_from_slice(&data);
-            Ok((
-                prefix,
-                DecodeResult::SecretKey(SecretKey::from_bytes(bytes)),
-            ))
+            Ok(DecodeResult::SecretKey(SecretKey::from_bytes(bytes)))
         }
         "note" => {
             if data.len() != 32 {
@@ -73,15 +69,12 @@ pub fn decode(bech32_string: &str) -> Result<(String, DecodeResult)> {
             }
             let mut bytes = [0u8; 32];
             bytes.copy_from_slice(&data);
-            Ok((
-                prefix,
-                DecodeResult::Event(EventPointer {
-                    id: ID::from_bytes(bytes),
-                    relays: Vec::new(),
-                    author: None,
-                    kind: None,
-                }),
-            ))
+            Ok(DecodeResult::Event(EventPointer {
+                id: ID::from_bytes(bytes),
+                relays: Vec::new(),
+                author: None,
+                kind: None,
+            }))
         }
         "npub" => {
             if data.len() != 32 {
@@ -92,7 +85,7 @@ pub fn decode(bech32_string: &str) -> Result<(String, DecodeResult)> {
             }
             let mut bytes = [0u8; 32];
             bytes.copy_from_slice(&data);
-            Ok((prefix, DecodeResult::PubKey(PubKey::from_bytes(bytes))))
+            Ok(DecodeResult::PubKey(PubKey::from_bytes(bytes)))
         }
         "nprofile" => {
             let mut result = ProfilePointer {
@@ -136,7 +129,7 @@ pub fn decode(bech32_string: &str) -> Result<(String, DecodeResult)> {
                 return Err(Nip19Error::MissingField("pubkey for nprofile".to_string()));
             }
 
-            Ok((prefix, DecodeResult::Profile(result)))
+            Ok(DecodeResult::Profile(result))
         }
         "nevent" => {
             let mut result = EventPointer {
@@ -200,7 +193,7 @@ pub fn decode(bech32_string: &str) -> Result<(String, DecodeResult)> {
                 return Err(Nip19Error::MissingField("id for nevent".to_string()));
             }
 
-            Ok((prefix, DecodeResult::Event(result)))
+            Ok(DecodeResult::Event(result))
         }
         "naddr" => {
             let mut result = EntityPointer {
@@ -260,80 +253,69 @@ pub fn decode(bech32_string: &str) -> Result<(String, DecodeResult)> {
                 return Err(Nip19Error::Incomplete("naddr".to_string()));
             }
 
-            Ok((prefix, DecodeResult::Entity(result)))
+            Ok(DecodeResult::Entity(result))
         }
-        _ => Err(Nip19Error::UnknownPrefix(prefix)),
+        _ => Err(Nip19Error::UnknownPrefix(prefix.to_string())),
     }
 }
 
 /// encode a secret key as nsec
-pub fn encode_nsec(sk: &SecretKey) -> Result<String> {
-    let bits5 = sk.as_bytes().to_base32();
-    Ok(bech32::encode("nsec", bits5, Variant::Bech32)?)
+pub fn encode_nsec(sk: &SecretKey) -> String {
+    bech32::encode::<Bech32>(Hrp::parse_unchecked("nsec"), sk.as_bytes()).unwrap()
 }
 
 /// encode a public key as npub
-pub fn encode_npub(pk: &PubKey) -> Result<String> {
-    let bits5 = pk.as_bytes().to_base32();
-    Ok(bech32::encode("npub", bits5, Variant::Bech32)?)
+pub fn encode_npub(pk: &PubKey) -> String {
+    bech32::encode::<Bech32>(Hrp::parse_unchecked("npub"), pk.as_bytes()).unwrap()
 }
 
 /// encode a profile pointer as nprofile
-pub fn encode_nprofile(pk: &PubKey, relays: &[String]) -> Result<String> {
+pub fn encode_nprofile(pk: &PubKey, relays: &[String]) -> String {
     let mut buf = Vec::new();
-    write_tlv_entry(&mut buf, TLV_DEFAULT, pk.as_bytes())?;
+    write_tlv_entry(&mut buf, TLV_DEFAULT, pk.as_bytes());
 
     for relay in relays {
-        write_tlv_entry(&mut buf, TLV_RELAY, relay.as_bytes())?;
+        write_tlv_entry(&mut buf, TLV_RELAY, relay.as_bytes());
     }
 
-    let bits5 = buf.to_base32();
-    Ok(bech32::encode("nprofile", bits5, Variant::Bech32)?)
+    bech32::encode::<Bech32>(Hrp::parse_unchecked("nprofile"), &buf).unwrap()
 }
 
 /// encode an event pointer as nevent
-pub fn encode_nevent(id: &ID, relays: &[String], author: Option<&PubKey>) -> Result<String> {
+pub fn encode_nevent(id: &ID, relays: &[String], author: Option<&PubKey>) -> String {
     let mut buf = Vec::new();
-    write_tlv_entry(&mut buf, TLV_DEFAULT, id.as_bytes())?;
+    write_tlv_entry(&mut buf, TLV_DEFAULT, id.as_bytes());
 
     for relay in relays {
-        write_tlv_entry(&mut buf, TLV_RELAY, relay.as_bytes())?;
+        write_tlv_entry(&mut buf, TLV_RELAY, relay.as_bytes());
     }
 
     if let Some(author) = author {
-        write_tlv_entry(&mut buf, TLV_AUTHOR, author.as_bytes())?;
+        write_tlv_entry(&mut buf, TLV_AUTHOR, author.as_bytes());
     }
 
-    let bits5 = buf.to_base32();
-    Ok(bech32::encode("nevent", bits5, Variant::Bech32)?)
+    bech32::encode::<Bech32>(Hrp::parse_unchecked("nevent"), &buf).unwrap()
 }
 
 /// encode an entity pointer as naddr
-pub fn encode_naddr(
-    pk: &PubKey,
-    kind: Kind,
-    identifier: &str,
-    relays: &[String],
-) -> Result<String> {
+pub fn encode_naddr(pk: &PubKey, kind: Kind, identifier: &str, relays: &[String]) -> String {
     let mut buf = Vec::new();
-
-    write_tlv_entry(&mut buf, TLV_DEFAULT, identifier.as_bytes())?;
+    write_tlv_entry(&mut buf, TLV_DEFAULT, identifier.as_bytes());
 
     for relay in relays {
-        write_tlv_entry(&mut buf, TLV_RELAY, relay.as_bytes())?;
+        write_tlv_entry(&mut buf, TLV_RELAY, relay.as_bytes());
     }
 
-    write_tlv_entry(&mut buf, TLV_AUTHOR, pk.as_bytes())?;
+    write_tlv_entry(&mut buf, TLV_AUTHOR, pk.as_bytes());
 
     let kind_bytes = (kind as u32).to_be_bytes();
-    write_tlv_entry(&mut buf, TLV_KIND, &kind_bytes)?;
+    write_tlv_entry(&mut buf, TLV_KIND, &kind_bytes);
 
-    let bits5 = buf.to_base32();
-    Ok(bech32::encode("naddr", bits5, Variant::Bech32)?)
+    bech32::encode::<Bech32>(Hrp::parse_unchecked("naddr"), &buf).unwrap()
 }
 
 /// encode a pointer using the appropriate encoding
-pub fn encode_pointer(pointer: &Pointer) -> Result<String> {
+pub fn encode_pointer(pointer: &Pointer) -> String {
     match pointer {
         Pointer::Profile(p) => {
             if p.relays.is_empty() {
@@ -349,48 +331,15 @@ pub fn encode_pointer(pointer: &Pointer) -> Result<String> {
 
 /// convert a bech32 string to a pointer
 pub fn to_pointer(code: &str) -> Result<Pointer> {
-    let (prefix, data) = decode(code)?;
-
-    match prefix.as_str() {
-        "npub" => {
-            if let DecodeResult::PubKey(pk) = data {
-                Ok(Pointer::Profile(ProfilePointer {
-                    public_key: pk,
-                    relays: Vec::new(),
-                }))
-            } else {
-                Err(Nip19Error::UnexpectedResult("npub".to_string()))
-            }
-        }
-        "nprofile" => {
-            if let DecodeResult::Profile(p) = data {
-                Ok(Pointer::Profile(p))
-            } else {
-                Err(Nip19Error::UnexpectedResult("nprofile".to_string()))
-            }
-        }
-        "nevent" => {
-            if let DecodeResult::Event(p) = data {
-                Ok(Pointer::Event(p))
-            } else {
-                Err(Nip19Error::UnexpectedResult("nevent".to_string()))
-            }
-        }
-        "note" => {
-            if let DecodeResult::Event(p) = data {
-                Ok(Pointer::Event(p))
-            } else {
-                Err(Nip19Error::UnexpectedResult("note".to_string()))
-            }
-        }
-        "naddr" => {
-            if let DecodeResult::Entity(p) = data {
-                Ok(Pointer::Entity(p))
-            } else {
-                Err(Nip19Error::UnexpectedResult("naddr".to_string()))
-            }
-        }
-        _ => Err(Nip19Error::UnexpectedResult(prefix)),
+    match decode(code)? {
+        DecodeResult::PubKey(pk) => Ok(Pointer::Profile(ProfilePointer {
+            public_key: pk,
+            relays: Vec::new(),
+        })),
+        DecodeResult::Profile(p) => Ok(Pointer::Profile(p)),
+        DecodeResult::Event(p) => Ok(Pointer::Event(p)),
+        DecodeResult::Entity(p) => Ok(Pointer::Entity(p)),
+        _ => Err(Nip19Error::UnexpectedResult(code.to_string())),
     }
 }
 
@@ -412,16 +361,10 @@ fn read_tlv_entry(data: &[u8]) -> Result<(u8, Vec<u8>)> {
 }
 
 /// write a TLV entry to buffer
-fn write_tlv_entry(buf: &mut Vec<u8>, typ: u8, value: &[u8]) -> Result<()> {
-    let length = value.len();
-    if length > 255 {
-        return Err(Nip19Error::TlvTooLong);
-    }
-
+fn write_tlv_entry(buf: &mut Vec<u8>, typ: u8, value: &[u8]) {
     buf.push(typ);
-    buf.push(length as u8);
+    buf.push(value.len() as u8);
     buf.extend_from_slice(value);
-    Ok(())
 }
 
 #[cfg(test)]
@@ -433,14 +376,13 @@ mod tests {
         let pk =
             PubKey::from_hex("d91191e30e00444b942c0e82cad470b32af171764c2275bee0bd99377efd4075")
                 .unwrap();
-        let npub = encode_npub(&pk).unwrap();
+        let npub = encode_npub(&pk);
         assert_eq!(
             npub,
             "npub1mygerccwqpzyh9pvp6pv44rskv40zutkfs38t0hqhkvnwlhagp6s3psn5p"
         );
 
-        let (prefix, result) = decode(&npub).unwrap();
-        assert_eq!(prefix, "npub");
+        let result = decode(&npub).unwrap();
         if let DecodeResult::PubKey(decoded_pk) = result {
             assert_eq!(decoded_pk, pk);
         } else {
@@ -452,14 +394,13 @@ mod tests {
     fn test_encode_decode_nsec() {
         let sk_hex = "fe20f3381b9404e9a35afb49b3dc070a4dc1ffd321ab8f3eae979ab96f601e3a";
         let sk = SecretKey::from_hex(sk_hex).unwrap();
-        let nsec = encode_nsec(&sk).unwrap();
+        let nsec = encode_nsec(&sk);
         assert_eq!(
             nsec,
             "nsec1lcs0xwqmjszwng66ldym8hq8pfxurl7nyx4c704wj7dtjmmqrcaqazp4dg"
         );
 
-        let (prefix, result) = decode(&nsec).unwrap();
-        assert_eq!(prefix, "nsec");
+        let result = decode(&nsec).unwrap();
         if let DecodeResult::SecretKey(decoded_sk) = result {
             assert_eq!(decoded_sk.as_bytes(), sk.as_bytes());
         } else {
@@ -477,11 +418,10 @@ mod tests {
             "wss://nostr.land".to_string(),
         ];
 
-        let nprofile = encode_nprofile(&pk, &relays).unwrap();
+        let nprofile = encode_nprofile(&pk, &relays);
         assert_eq!(nprofile, "nprofile1qqsdjyv3uv8qq3ztjskqaqk263ctx2h3w9mycgn4hmstmxfh0m75qagpzemhxue69uhhyetvv9ujuurjd9kkzmpwdejhgqgswaehxw309ahx7um5wghxcctwvs3a0whv");
 
-        let (prefix, result) = decode(&nprofile).unwrap();
-        assert_eq!(prefix, "nprofile");
+        let result = decode(&nprofile).unwrap();
         if let DecodeResult::Profile(profile) = result {
             assert_eq!(profile.public_key, pk);
             assert_eq!(profile.relays, relays);
