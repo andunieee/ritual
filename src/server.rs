@@ -3,12 +3,19 @@
 //! This module provides a complete Nostr relay server implementation
 //! using hyper for HTTP and WebSocket handling.
 
-use crate::nip11::RelayInformationDocument;
-use hyper::{Response, StatusCode};
+use crate::{
+    envelopes::{parse_message, Envelope, ReqEnvelope},
+    nip11::RelayInformationDocument,
+};
+use bytes::Bytes;
+use futures::{SinkExt, StreamExt};
+use http_body_util::Full;
+use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 use thiserror::Error;
 use tokio::net::TcpListener;
+use tokio_tungstenite::tungstenite::Message;
 
 #[derive(Error, Debug)]
 pub enum RelayError {
@@ -30,113 +37,122 @@ pub struct RelayInternals {
     pub info: RelayInformationDocument,
 }
 
-impl RelayInternals {
-    pub fn new() -> Self {
-        RelayInternals {
-            info: RelayInformationDocument {
-                ..Default::default()
-            },
-        }
-    }
+fn new() -> Arc<RelayInternals> {
+    Arc::new(RelayInternals {
+        info: RelayInformationDocument {
+            ..Default::default()
+        },
+    })
+}
 
-    /// start the relay server
-    pub async fn start(&self, addr: SocketAddr) -> Result<()> {
-        let listener = TcpListener::bind(addr).await?;
+/// start the relay server
+async fn start(ri: Arc<RelayInternals>, addr: SocketAddr) -> Result<()> {
+    let listener = TcpListener::bind(addr).await?;
+    println!("relay listening on {}", addr);
 
-        let service = hyper::service::service_fn(async |req| {
-            match (req.method(), req.uri().path()) {
-                // (&Method::GET, "/") => {
-                //     // check if this is a websocket upgrade request
-                //     if hyper_tungstenite::is_upgrade_request(&req) {
-                //         self.handle_websocket_upgrade(req).await
-                //     } else {
-                //         // check for NIP-11 request
-                //         if let Some(accept) = req.headers().get("accept") {
-                //             if accept == "application/nostr+json" {
-                //                 return self.handle_nip11().await;
-                //             }
-                //         }
+    async fn service(
+        req: Request<Incoming>,
+        ri: Arc<RelayInternals>,
+    ) -> std::result::Result<Response<Full<Bytes>>, String> {
+        match (req.method(), req.uri().path()) {
+            (&Method::GET, "/") => {
+                // check if this is a websocket upgrade request
+                if hyper_tungstenite::is_upgrade_request(&req) {
+                    match hyper_tungstenite::upgrade(req, None) {
+                        Ok((response, websocket)) => {
+                            tokio::spawn(async move {
+                                match websocket.await {
+                                    Ok(ws_stream) => {
+                                        let (mut tx, mut rx) = ws_stream.split();
 
-                //         // default response
-                //         Ok(Response::builder()
-                //             .status(StatusCode::OK)
-                //             .body("nostr relay")
-                //             .unwrap())
-                //     }
-                // }
-                _ => {
-                    let x = Response::builder()
-                        .status(StatusCode::NOT_FOUND)
-                        .body("x".to_string())
-                        .unwrap();
-                    let res: std::result::Result<Response<String>, String> = Ok(x);
-                    res
+                                        // handle incoming messages
+                                        tokio::spawn(async move {
+                                            while let Some(Ok(msg)) = rx.next().await {
+                                                match msg {
+                                                    Message::Text(msg) => {
+                                                        match parse_message(msg.as_str()) {
+                                                            Ok(Envelope::Req(req)) => {}
+                                                            Ok(Envelope::CountAsk(creq)) => {}
+                                                            Ok(Envelope::OutEvent(evt)) => {}
+                                                            _ => {}
+                                                        }
+                                                    }
+                                                    _ => {}
+                                                }
+                                            }
+                                        });
+                                    }
+                                    Err(e) => {
+                                        println!("websocket upgrade failed: {}", e);
+                                    }
+                                }
+                            });
+
+                            Ok::<hyper::Response<http_body_util::Full<bytes::Bytes>>, String>(
+                                response,
+                            )
+                        }
+                        Err(e) => {
+                            println!("websocket upgrade error: {}", e);
+                            Ok(Response::builder()
+                                .status(StatusCode::BAD_REQUEST)
+                                .body(Full::new(Bytes::from("websocket upgrade failed")))
+                                .unwrap())
+                        }
+                    }
+                } else {
+                    // check for NIP-11 request
+                    if let Some(accept) = req.headers().get("accept") {
+                        if accept == "application/nostr+json" {
+                            let info_json = match serde_json::to_string(&ri.info) {
+                                Ok(json) => json,
+                                Err(_) => "{}".to_string(),
+                            };
+                            return Ok(Response::builder()
+                                .status(StatusCode::OK)
+                                .header("content-type", "application/nostr+json")
+                                .header("access-control-allow-origin", "*")
+                                .body(Full::new(Bytes::from(info_json)))
+                                .unwrap());
+                        }
+                    }
+
+                    // default response
+                    Ok(Response::builder()
+                        .status(StatusCode::OK)
+                        .body(Full::new(Bytes::from("nostr relay")))
+                        .unwrap())
                 }
             }
+            _ => Ok(Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Full::new(Bytes::from("not found")))
+                .unwrap()),
+        }
+    }
+
+    loop {
+        let (tcp, _) = listener.accept().await?;
+        let io = TokioIo::new(tcp);
+        let ri_ = ri.clone();
+
+        println!("loop");
+
+        tokio::task::spawn(async move {
+            let http = hyper::server::conn::http1::Builder::new();
+            let conn = http
+                .serve_connection(
+                    io,
+                    hyper::service::service_fn(|req| service(req, ri_.clone())),
+                )
+                .with_upgrades();
+
+            if let Err(err) = conn.await {
+                println!("error serving connection: {:?}", err);
+            }
         });
-
-        loop {
-            let (tcp, _) = listener.accept().await?;
-            let io = TokioIo::new(tcp);
-
-            tokio::task::spawn(async move {
-                let conn = hyper::server::conn::http1::Builder::new().serve_connection(io, service);
-
-                if let Err(err) = conn.await {
-                    println!("error serving connection: {:?}", err);
-                };
-            });
-
-            println!("relay listening on {}", addr);
-        }
-    }
-
-    // /// handle NIP-11 information request
-    // async fn handle_nip11(&self) -> Result<Response<Body>> {
-    //     let info = self.info.read().await;
-    //     let json = serde_json::to_string(&*info)?;
-
-    //     Ok(Response::builder()
-    //         .status(StatusCode::OK)
-    //         .header("content-type", "application/nostr+json")
-    //         .header("access-control-allow-origin", "*")
-    //         .body(Body::from(json))
-    //         .unwrap())
-    // }
-
-    // /// handle websocket upgrade
-    // async fn handle_websocket_upgrade(&self, req: Request<Body>) -> Result<Response<Body>> {
-    //     let (response, websocket) = hyper_tungstenite::upgrade(req, None).unwrap();
-
-    //     // spawn task to handle the websocket connection
-    //     tokio::spawn(async move {
-    //         if let Err(e) = handle_websocket_connection(websocket).await {
-    //             eprintln!("websocket error: {}", e);
-    //         }
-    //     });
-
-    //     Ok(response)
-    // }
-}
-
-impl Clone for RelayInternals {
-    fn clone(&self) -> Self {
-        Self {
-            info: self.info.clone(),
-        }
     }
 }
-
-// /// handle websocket connection
-// async fn handle_websocket_connection(websocket: HyperWebsocket) -> Result<()> {
-//     let mut ws_stream = websocket.await?;
-//
-//     ws_stream.send(Message::text("banana")).await?;
-//
-//     println!("websocket connection established (but not implemented yet)");
-//
-//     Ok(())
-// }
 
 #[cfg(test)]
 mod tests {
@@ -146,14 +162,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_nip11_endpoint() {
-        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let relay = RelayInternals::new();
+        let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let relay = new();
 
         // start server in background
-        let server_handle = tokio::spawn(async move { relay.start(addr).await });
+        let server_handle = tokio::spawn(async move { start(relay, addr).await });
 
         // give server time to start
-        sleep(Duration::from_millis(100)).await;
+        sleep(Duration::from_millis(200000)).await;
 
         // make NIP-11 request
         let client = reqwest::Client::new();
