@@ -106,7 +106,7 @@ impl EntityPointer {
         };
 
         Ok(Self {
-            kind,
+            kind: Kind(kind),
             relays,
             public_key,
             identifier,

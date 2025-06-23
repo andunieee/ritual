@@ -4,18 +4,19 @@
 //! using hyper for HTTP and WebSocket handling.
 
 use crate::{
-    envelopes::{parse_message, Envelope, ReqEnvelope},
+    envelopes::{parse_message, EOSEEnvelope, Envelope, NoticeEnvelope, OKEnvelope, ReqEnvelope},
     nip11::RelayInformationDocument,
+    normalize_ok_message, Event, Filter,
 };
 use bytes::Bytes;
-use futures::{SinkExt, StreamExt};
+use futures::{stream::SplitSink, SinkExt, StreamExt};
 use http_body_util::Full;
-use hyper::{body::Incoming, Method, Request, Response, StatusCode};
+use hyper::{body::Incoming, upgrade::Upgraded, Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use std::{net::SocketAddr, sync::Arc};
 use thiserror::Error;
-use tokio::net::TcpListener;
-use tokio_tungstenite::tungstenite::Message;
+use tokio::{net::TcpListener, sync::Mutex};
+use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 
 #[derive(Error, Debug)]
 pub enum RelayError {
@@ -27,26 +28,33 @@ pub enum RelayError {
     Json(#[from] serde_json::Error),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("custom relay error: {0}")]
+    CustomRelay(String),
 }
 
 pub type Result<T> = std::result::Result<T, RelayError>;
+
+/// trait for custom relay implementations
+pub trait CustomRelay: Send + Sync {
+    fn handle_event(&mut self, _event: &Event) -> std::result::Result<(), String> {
+        Err("can't handle anything".to_string())
+    }
+
+    fn handle_request(&mut self, _filter: &Filter) -> std::result::Result<Vec<Event>, String> {
+        Err("can't handle anything".to_string())
+    }
+}
 
 /// main relay server
 pub struct RelayInternals {
     /// relay information for NIP-11
     pub info: RelayInformationDocument,
-}
-
-fn new() -> Arc<RelayInternals> {
-    Arc::new(RelayInternals {
-        info: RelayInformationDocument {
-            ..Default::default()
-        },
-    })
+    /// relay methods
+    pub custom_relay: Box<Mutex<dyn CustomRelay>>,
 }
 
 /// start the relay server
-async fn start(ri: Arc<RelayInternals>, addr: SocketAddr) -> Result<()> {
+pub async fn start(ri: Arc<RelayInternals>, addr: SocketAddr) -> Result<()> {
     let listener = TcpListener::bind(addr).await?;
     println!("relay listening on {}", addr);
 
@@ -60,21 +68,65 @@ async fn start(ri: Arc<RelayInternals>, addr: SocketAddr) -> Result<()> {
                 if hyper_tungstenite::is_upgrade_request(&req) {
                     match hyper_tungstenite::upgrade(req, None) {
                         Ok((response, websocket)) => {
+                            let ri = ri.clone();
                             tokio::spawn(async move {
                                 match websocket.await {
                                     Ok(ws_stream) => {
-                                        let (mut tx, mut rx) = ws_stream.split();
+                                        let (tx, mut rx) = ws_stream.split();
+                                        let tx = Arc::new(Mutex::new(tx));
 
                                         // handle incoming messages
                                         tokio::spawn(async move {
                                             while let Some(Ok(msg)) = rx.next().await {
                                                 match msg {
-                                                    Message::Text(msg) => {
-                                                        match parse_message(msg.as_str()) {
-                                                            Ok(Envelope::Req(req)) => {}
-                                                            Ok(Envelope::CountAsk(creq)) => {}
-                                                            Ok(Envelope::OutEvent(evt)) => {}
-                                                            _ => {}
+                                                    Message::Text(msg_text) => {
+                                                        match parse_message(msg_text.as_str()) {
+                                                            Ok(Envelope::Req(req_env)) => {
+                                                                handle_req_envelope(
+                                                                    &ri,
+                                                                    tx.clone(),
+                                                                    req_env,
+                                                                )
+                                                                .await;
+                                                            }
+                                                            // Ok(Envelope::CountAsk(count_env)) => {
+                                                            //     handle_count_ask(
+                                                            //         &ri, tx, count_env,
+                                                            //     )
+                                                            //     .await;
+                                                            // }
+                                                            Ok(Envelope::OutEvent(event_env)) => {
+                                                                handle_event_envelope(
+                                                                    &ri,
+                                                                    tx.clone(),
+                                                                    &event_env.event,
+                                                                )
+                                                                .await;
+                                                            }
+                                                            Ok(envelope) => {
+                                                                let _ = tx
+                                                                    .lock()
+                                                                    .await
+                                                                    .send(Message::text(
+                                                                        serde_json::to_string(
+                                                                            &NoticeEnvelope(format!("we don't know how to handle this {}", envelope.label())),
+                                                                        )
+                                                                        .unwrap_or_default(),
+                                                                    ))
+                                                                    .await;
+                                                            }
+                                                            Err(err) => {
+                                                                let _ = tx
+                                                                    .lock()
+                                                                    .await
+                                                                    .send(Message::text(
+                                                                        serde_json::to_string(
+                                                                            &NoticeEnvelope(format!("failed to parse message: {}", err)),
+                                                                        )
+                                                                        .unwrap_or_default(),
+                                                                    ))
+                                                                    .await;
+                                                            }
                                                         }
                                                     }
                                                     _ => {}
@@ -136,8 +188,6 @@ async fn start(ri: Arc<RelayInternals>, addr: SocketAddr) -> Result<()> {
         let io = TokioIo::new(tcp);
         let ri_ = ri.clone();
 
-        println!("loop");
-
         tokio::task::spawn(async move {
             let http = hyper::server::conn::http1::Builder::new();
             let conn = http
@@ -154,27 +204,170 @@ async fn start(ri: Arc<RelayInternals>, addr: SocketAddr) -> Result<()> {
     }
 }
 
+async fn handle_req_envelope(
+    ri: &Arc<RelayInternals>,
+    tx: Arc<Mutex<SplitSink<WebSocketStream<TokioIo<Upgraded>>, Message>>>,
+    req_env: ReqEnvelope,
+) {
+    for filter in req_env.filters {
+        // query events
+        match ri.custom_relay.lock().await.handle_request(&filter) {
+            Ok(events) => {
+                for event in events {
+                    let event_env = serde_json::json!(["EVENT", req_env.subscription_id, event]);
+                    let _ = tx
+                        .lock()
+                        .await
+                        .send(Message::text(event_env.to_string()))
+                        .await;
+                }
+            }
+            Err(e) => {
+                let notice = NoticeEnvelope(format!("query error: {}", e));
+                let _ = tx
+                    .lock()
+                    .await
+                    .send(Message::text(
+                        serde_json::to_string(&notice).unwrap_or_default(),
+                    ))
+                    .await;
+            }
+        }
+    }
+
+    // send EOSE
+    let eose = EOSEEnvelope {
+        subscription_id: req_env.subscription_id,
+    };
+    let eose_json = serde_json::json!(["EOSE", eose.subscription_id]);
+    let _ = tx
+        .lock()
+        .await
+        .send(Message::text(eose_json.to_string()))
+        .await;
+}
+
+async fn handle_event_envelope(
+    ri: &Arc<RelayInternals>,
+    tx: Arc<Mutex<SplitSink<WebSocketStream<TokioIo<Upgraded>>, Message>>>,
+    event: &Event,
+) {
+    // check event ID
+    if !event.check_id() {
+        let ok = OKEnvelope {
+            event_id: event.id,
+            ok: false,
+            reason: "invalid: id is computed incorrectly".to_string(),
+        };
+        let ok_json = serde_json::json!(["OK", ok.event_id, ok.ok, ok.reason]);
+        let _ = tx
+            .lock()
+            .await
+            .send(Message::text(ok_json.to_string()))
+            .await;
+        return;
+    }
+
+    // check signature
+    if !event.verify_signature() {
+        let ok = OKEnvelope {
+            event_id: event.id,
+            ok: false,
+            reason: "invalid: signature is invalid".to_string(),
+        };
+        let ok_json = serde_json::json!(["OK", ok.event_id, ok.ok, ok.reason]);
+        let _ = tx
+            .lock()
+            .await
+            .send(Message::text(ok_json.to_string()))
+            .await;
+        return;
+    }
+
+    // possibly save event
+    match ri.custom_relay.lock().await.handle_event(&event) {
+        Ok(()) => {
+            let ok = OKEnvelope {
+                event_id: event.id,
+                ok: true,
+                reason: "".to_string(),
+            };
+            let ok_json = serde_json::json!(["OK", ok.event_id, ok.ok, ok.reason]);
+            let _ = tx
+                .lock()
+                .await
+                .send(Message::text(ok_json.to_string()))
+                .await;
+        }
+        Err(e) => {
+            let ok = OKEnvelope {
+                event_id: event.id,
+                ok: false,
+                reason: normalize_ok_message(&e, "error"),
+            };
+            let ok_json = serde_json::json!(["OK", ok.event_id, ok.ok, ok.reason]);
+            let _ = tx
+                .lock()
+                .await
+                .send(Message::text(ok_json.to_string()))
+                .await;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::SocketAddr;
+    use std::{cmp::min, net::SocketAddr};
     use tokio::time::{sleep, Duration};
+
+    struct InMemoryRelay {
+        events: Vec<Event>,
+    }
+
+    impl CustomRelay for InMemoryRelay {
+        fn handle_event(&mut self, event: &Event) -> std::result::Result<(), String> {
+            self.events.push(event.clone());
+            Ok(())
+        }
+
+        fn handle_request(&mut self, filter: &Filter) -> std::result::Result<Vec<Event>, String> {
+            let mut resp = Vec::with_capacity(min(
+                filter.limit.unwrap_or(500),
+                filter.get_theoretical_limit(),
+            ));
+            for event in &self.events {
+                if filter.matches(&event) {
+                    resp.push(event.clone());
+                }
+            }
+            Ok(resp)
+        }
+    }
 
     #[tokio::test]
     async fn test_nip11_endpoint() {
-        let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
-        let relay = new();
+        let addr: SocketAddr = "127.0.0.1:8081".parse().unwrap();
+        let relay = Arc::new(RelayInternals {
+            info: RelayInformationDocument {
+                name: "ksowknex".to_string(),
+                ..Default::default()
+            },
+            custom_relay: Box::new(Mutex::new(InMemoryRelay {
+                events: Vec::with_capacity(1024),
+            })),
+        });
 
         // start server in background
         let server_handle = tokio::spawn(async move { start(relay, addr).await });
 
         // give server time to start
-        sleep(Duration::from_millis(200000)).await;
+        sleep(Duration::from_millis(100)).await;
 
         // make NIP-11 request
         let client = reqwest::Client::new();
         let response = client
-            .get("http://127.0.0.1:8080/")
+            .get("http://127.0.0.1:8081/")
             .header("accept", "application/nostr+json")
             .send()
             .await
@@ -187,7 +380,7 @@ mod tests {
         );
 
         let info: RelayInformationDocument = response.json().await.unwrap();
-        assert_eq!(info.name, "");
+        assert_eq!(info.name, "ksowknex");
         assert_eq!(info.description, "");
 
         // cleanup

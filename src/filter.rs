@@ -95,13 +95,38 @@ impl Filter {
 
     /// get the theoretical limit of events this filter could return
     pub fn get_theoretical_limit(&self) -> usize {
+        // if ids are specified, return the number of ids
         if let Some(ref ids) = self.ids {
             return ids.len();
         }
 
-        // TODO: Implement more sophisticated limit calculation
-        // based on replaceable events, addressable events, etc.
+        // if until is less than since, return 0
+        if let (Some(until), Some(since)) = (self.until, self.since) {
+            if until < since {
+                return 0;
+            }
+        }
 
+        // if both authors and kinds are specified
+        if let (Some(ref authors), Some(ref kinds)) = (&self.authors, &self.kinds) {
+            // check if all kinds are replaceable
+            let all_are_replaceable = kinds.iter().all(|k| k.is_replaceable());
+            if all_are_replaceable {
+                return authors.len() * kinds.len();
+            }
+
+            // check if we have d tags and all kinds are addressable
+            if let Some(ref tags) = &self.tags {
+                if let Some(d_tags) = tags.get("d") {
+                    let all_are_addressable = kinds.iter().all(|k| k.is_addressable());
+                    if all_are_addressable {
+                        return authors.len() * kinds.len() * d_tags.len();
+                    }
+                }
+            }
+        }
+
+        // default to maximum value
         usize::MAX
     }
 }

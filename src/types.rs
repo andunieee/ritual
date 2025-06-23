@@ -212,3 +212,37 @@ impl fmt::Display for RelayEvent {
         write!(f, "[{}] >> {}", self.relay_url, self.event)
     }
 }
+
+/// event kind type
+#[derive(
+    Copy, Error, Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize,
+)]
+pub struct Kind(pub u16);
+
+impl Kind {
+    /// check if this kind is regular (1-9999, excluding 0 and 3)
+    pub fn is_regular(&self) -> bool {
+        self.0 < 10000 && self.0 != 0 && self.0 != 3
+    }
+
+    /// check if this kind is replaceable (0, 3, or 10000-19999)
+    pub fn is_replaceable(&self) -> bool {
+        self.0 == 0 || self.0 == 3 || (10000..20000).contains(&self.0)
+    }
+
+    /// check if this kind is ephemeral (20000-29999)
+    pub fn is_ephemeral(&self) -> bool {
+        (20000..30000).contains(&self.0)
+    }
+
+    /// check if this kind is addressable (30000-39999)
+    pub fn is_addressable(&self) -> bool {
+        (30000..40000).contains(&self.0)
+    }
+}
+
+impl fmt::Display for Kind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}

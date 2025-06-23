@@ -243,7 +243,7 @@ impl LMDBStore {
         filter.authors = Some(vec![event.pubkey]);
         filter.limit = Some(10);
 
-        if event.kind >= 30000 && event.kind < 40000 {
+        if event.kind.is_addressable() {
             // addressable event - add d tag
             let d_tag = event.tags.get_d();
             if !d_tag.is_empty() {
@@ -295,7 +295,7 @@ impl LMDBStore {
         // by kind + date
         {
             let mut key = [INDEX_KIND_PREFIX; 1 + 2 + 4];
-            key[1..1 + 2].copy_from_slice(&(event.kind as u16).to_be_bytes());
+            key[1..1 + 2].copy_from_slice(&event.kind.0.to_be_bytes());
             key[1 + 2..].copy_from_slice(&ts_bytes);
             keys.push(IndexKey {
                 db: self.index_kind,
@@ -318,7 +318,7 @@ impl LMDBStore {
         {
             let mut key = [INDEX_PUBKEY_KIND_PREFIX; 1 + 8 + 2 + 4];
             key[1..1 + 8].copy_from_slice(&event.pubkey.as_bytes()[0..8]);
-            key[1 + 8..1 + 8 + 2].copy_from_slice(&(event.kind as u16).to_be_bytes());
+            key[1 + 8..1 + 8 + 2].copy_from_slice(&event.kind.0.to_be_bytes());
             key[1 + 8 + 2..].copy_from_slice(&ts_bytes);
             keys.push(IndexKey {
                 db: self.index_pubkey_kind,
@@ -519,7 +519,7 @@ mod tests {
             let event = EventTemplate {
                 content: format!("{}", i),
                 created_at: Timestamp(i),
-                kind: i as Kind,
+                kind: Kind(i as u16),
                 ..Default::default()
             }
             .finalize(sk())
@@ -529,12 +529,12 @@ mod tests {
 
         // filter by kind 1
         let mut filter = Filter::new();
-        filter.kinds = Some(vec![1]);
+        filter.kinds = Some(vec![Kind(1)]);
         let results = store
             .query_events(&filter, 100)
             .expect("failed to query events");
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].kind, 1);
+        assert_eq!(results[0].kind, Kind(1));
 
         store.close();
         let _ = std::fs::remove_dir_all(&temp_dir);

@@ -16,13 +16,13 @@ pub mod nip05;
 pub mod nip11;
 pub mod nip19;
 pub mod pointers;
+pub mod server;
 pub mod timestamp;
 
 // re-export commonly used types
 mod normalize;
 mod pool;
 mod relay;
-mod server;
 mod subscription;
 mod tags;
 mod types;
@@ -41,6 +41,3 @@ pub use types::*;
 
 /// result type used throughout the library
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
-
-/// event kind type
-pub type Kind = u16;

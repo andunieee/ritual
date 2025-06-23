@@ -179,7 +179,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult> {
                             return Err(Nip19Error::InvalidKind);
                         }
                         let kind_bytes: [u8; 4] = value.clone().try_into().unwrap();
-                        result.kind = Some(u32::from_be_bytes(kind_bytes) as Kind);
+                        result.kind = Some(Kind(u32::from_be_bytes(kind_bytes) as u16));
                     }
                     _ => {
                         // ignore unknown TLV types
@@ -198,7 +198,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult> {
         "naddr" => {
             let mut result = EntityPointer {
                 public_key: PubKey::from_bytes([0u8; 32]),
-                kind: 0,
+                kind: Kind(0),
                 identifier: String::new(),
                 relays: Vec::new(),
             };
@@ -238,7 +238,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult> {
                             return Err(Nip19Error::InvalidKind);
                         }
                         let kind_bytes: [u8; 4] = value.clone().try_into().unwrap();
-                        result.kind = u32::from_be_bytes(kind_bytes) as Kind;
+                        result.kind = Kind(u32::from_be_bytes(kind_bytes) as u16);
                         found_kind = true;
                     }
                     _ => {
@@ -308,7 +308,7 @@ pub fn encode_naddr(pk: &PubKey, kind: Kind, identifier: &str, relays: &[String]
 
     write_tlv_entry(&mut buf, TLV_AUTHOR, pk.as_bytes());
 
-    let kind_bytes = (kind as u32).to_be_bytes();
+    let kind_bytes = (kind.0 as u32).to_be_bytes();
     write_tlv_entry(&mut buf, TLV_KIND, &kind_bytes);
 
     bech32::encode::<Bech32>(Hrp::parse_unchecked("naddr"), &buf).unwrap()
