@@ -16,7 +16,7 @@ pub enum EnvelopeError {
     #[error("JSON parsing error")]
     Json(#[from] serde_json::Error),
     #[error("hex decoding error")]
-    Hex(#[from] hex::FromHexError),
+    Hex(#[from] lowercase_hex::FromHexError),
     #[error("ID parsing error")]
     IdParsing(#[from] crate::types::IDError),
 }
@@ -175,7 +175,7 @@ pub fn parse_message(message: &str) -> Result<Envelope> {
                 .to_string();
 
             let mut filters = Vec::with_capacity(arr.len() - 2);
-            for x in 2.. {
+            for x in 2..arr.len() {
                 let extraf: Filter = serde_json::from_value(arr[x].clone())?;
                 filters.push(extraf);
             }
@@ -216,7 +216,7 @@ pub fn parse_message(message: &str) -> Result<Envelope> {
                         if hll_str.len() != 512 {
                             return Err(EnvelopeError::InvalidEnvelope("COUNT".to_string()));
                         }
-                        let hll = hex::decode(hll_str).ok();
+                        let hll = lowercase_hex::decode(hll_str).ok();
                         countre.hyperloglog = hll;
                     }
                 }

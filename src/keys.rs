@@ -13,7 +13,7 @@ pub enum KeyError {
     #[error("secret key should be at most 64-char hex, got '{0}'")]
     InvalidLength(String),
     #[error("invalid hex encoding")]
-    InvalidHex(#[from] hex::FromHexError),
+    InvalidHex(#[from] lowercase_hex::FromHexError),
     #[error("invalid secret key")]
     InvalidSecretKey,
 }
@@ -53,13 +53,13 @@ impl SecretKey {
         };
 
         let mut bytes = [0u8; 32];
-        hex::decode_to_slice(&hex_str, &mut bytes)?;
+        lowercase_hex::decode_to_slice(&hex_str, &mut bytes)?;
         Ok(Self(bytes))
     }
 
     /// convert to hex string
     pub fn to_hex(&self) -> String {
-        hex::encode(self.0)
+        lowercase_hex::encode(self.0)
     }
 
     /// get the public key for this secret key

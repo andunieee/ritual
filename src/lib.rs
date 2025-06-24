@@ -5,6 +5,8 @@
 //! this library provides types and utilities for working with the Nostr protocol,
 //! including events, filters, relays, and connections.
 
+#![feature(test)]
+
 pub mod envelopes;
 pub mod event;
 pub mod event_template;

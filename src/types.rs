@@ -6,7 +6,7 @@ use url::Url;
 #[derive(Error, Debug)]
 pub enum IDError {
     #[error("invalid hex encoding")]
-    InvalidHex(#[from] hex::FromHexError),
+    InvalidHex(#[from] lowercase_hex::FromHexError),
     #[error("invalid ID length: expected 32 bytes, got {0}")]
     InvalidLength(usize),
 }
@@ -14,7 +14,7 @@ pub enum IDError {
 #[derive(Error, Debug)]
 pub enum PubKeyError {
     #[error("invalid hex encoding")]
-    InvalidHex(#[from] hex::FromHexError),
+    InvalidHex(#[from] lowercase_hex::FromHexError),
     #[error("invalid public key length: expected 32 bytes, got {0}")]
     InvalidLength(usize),
 }
@@ -22,7 +22,7 @@ pub enum PubKeyError {
 #[derive(Error, Debug)]
 pub enum SignatureError {
     #[error("invalid hex encoding")]
-    InvalidHex(#[from] hex::FromHexError),
+    InvalidHex(#[from] lowercase_hex::FromHexError),
     #[error("invalid signature length: expected 64 bytes, got {0}")]
     InvalidLength(usize),
 }
@@ -50,12 +50,12 @@ impl ID {
             return Err(IDError::InvalidLength(hex_str.len() / 2));
         }
         let mut bytes = [0u8; 32];
-        hex::decode_to_slice(hex_str, &mut bytes)?;
+        lowercase_hex::decode_to_slice(hex_str, &mut bytes)?;
         Ok(Self(bytes))
     }
 
     pub fn to_hex(&self) -> String {
-        hex::encode(self.0)
+        lowercase_hex::encode(self.0)
     }
 }
 
@@ -107,12 +107,12 @@ impl PubKey {
             return Err(PubKeyError::InvalidLength(hex_str.len() / 2));
         }
         let mut bytes = [0u8; 32];
-        hex::decode_to_slice(hex_str, &mut bytes)?;
+        lowercase_hex::decode_to_slice(hex_str, &mut bytes)?;
         Ok(Self(bytes))
     }
 
     pub fn to_hex(&self) -> String {
-        hex::encode(self.0)
+        lowercase_hex::encode(self.0)
     }
 }
 
@@ -162,13 +162,13 @@ impl Signature {
             return Err(SignatureError::InvalidLength(hex_str.len() / 2));
         }
         let mut bytes = [0u8; 64];
-        hex::decode_to_slice(hex_str, &mut bytes)?;
+        lowercase_hex::decode_to_slice(hex_str, &mut bytes)?;
         Ok(Self(bytes))
     }
 
     /// Convert to hex string
     pub fn to_hex(&self) -> String {
-        hex::encode(self.0)
+        lowercase_hex::encode(self.0)
     }
 }
 

@@ -51,11 +51,7 @@ pub fn extract_event_id(json_str: &str) -> Option<ID> {
     let quote_start = remaining.find('"')?;
     let id_str = &remaining[quote_start + 1..quote_start + 1 + 64];
 
-    if id_str.len() == 64 {
-        ID::from_hex(id_str).ok()
-    } else {
-        None
-    }
+    ID::from_hex(id_str).ok()
 }
 
 /// extract event public key from JSON string
@@ -116,22 +112,60 @@ pub fn extract_timestamp(json_str: &str) -> Option<Timestamp> {
     num_str.parse::<i64>().ok().map(Timestamp::from)
 }
 
-/// Check if string is lowercase hex
-pub fn is_lower_hex(s: &str) -> bool {
-    s.chars()
-        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
-}
-
-/// convert subscription ID to serial number
-pub fn sub_id_to_serial(sub_id: &str) -> Option<i64> {
-    let colon_pos = sub_id.find(':')?;
-    sub_id[..colon_pos].parse().ok()
-}
-
 /// check if a URL is a valid relay URL (ws:// or wss://)
 pub fn is_valid_relay_url(url_str: &str) -> bool {
     match Url::parse(url_str) {
         Ok(url) => matches!(url.scheme(), "ws" | "wss"),
         Err(_) => false,
+    }
+}
+
+extern crate test;
+
+#[cfg(test)]
+mod tests {
+    use crate::Event;
+
+    use super::*;
+    use test::Bencher;
+
+    #[test]
+    fn test_extract_event_id() {
+        let id =
+            ID::from_hex("9429b2e11640bfd86971f0d9f7435199b57e121a363213df11d5b426807e49f5").ok();
+
+        assert_eq!(
+            extract_event_id(
+                r#"{"kind":1,"id":"9429b2e11640bfd86971f0d9f7435199b57e121a363213df11d5b426807e49f5","pubkey":"37a4aef1f8423ca076e4b7d99a8cabff40ddb8231f2a9f01081f15d7fa65c1ba","created_at":1750711742,"tags":[],"content":"hello world","sig":"a1ecbf1636f5e752f1b918a86b065a8031b1387f0785f0ca19b84cc155d7937fece1f3ae53b79d347fbce5555a0f2da8db96334cab154f8d92300f8c1936710c"}"#
+            ),
+            id,
+        );
+
+        assert_eq!(
+            id,
+            Some(ID([
+                0x94, 0x29, 0xb2, 0xe1, 0x16, 0x40, 0xbf, 0xd8, 0x69, 0x71, 0xf0, 0xd9, 0xf7, 0x43,
+                0x51, 0x99, 0xb5, 0x7e, 0x12, 0x1a, 0x36, 0x32, 0x13, 0xdf, 0x11, 0xd5, 0xb4, 0x26,
+                0x80, 0x7e, 0x49, 0xf5,
+            ]))
+        );
+    }
+
+    #[bench]
+    fn bench_get_id_serde(b: &mut Bencher) {
+        let eventj = r#"{"kind":1,"pubkey":"37a4aef1f8423ca076e4b7d99a8cabff40ddb8231f2a9f01081f15d7fa65c1ba","created_at":1750711742,"tags":[],"content":"hello world","sig":"a1ecbf1636f5e752f1b918a86b065a8031b1387f0785f0ca19b84cc155d7937fece1f3ae53b79d347fbce5555a0f2da8db96334cab154f8d92300f8c1936710c","id":"9429b2e11640bfd86971f0d9f7435199b57e121a363213df11d5b426807e49f5"}"#;
+        b.iter(|| {
+            let id = serde_json::from_str::<Event>(eventj).map(|evt| evt.id).ok();
+            id
+        });
+    }
+
+    #[bench]
+    fn bench_get_id_manual(b: &mut Bencher) {
+        let eventj = r#"{"kind":1,"pubkey":"37a4aef1f8423ca076e4b7d99a8cabff40ddb8231f2a9f01081f15d7fa65c1ba","created_at":1750711742,"tags":[],"content":"hello world","sig":"a1ecbf1636f5e752f1b918a86b065a8031b1387f0785f0ca19b84cc155d7937fece1f3ae53b79d347fbce5555a0f2da8db96334cab154f8d92300f8c1936710c","id":"9429b2e11640bfd86971f0d9f7435199b57e121a363213df11d5b426807e49f5"}"#;
+        b.iter(|| {
+            let id = extract_event_id(eventj);
+            id
+        });
     }
 }
