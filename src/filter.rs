@@ -2,7 +2,7 @@ use crate::{Event, Kind, PubKey, TagMap, Timestamp, ID};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// filter for querying events
+/// Nostr filter for querying events
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Filter {
     #[serde(skip_serializing_if = "Option::is_none")]

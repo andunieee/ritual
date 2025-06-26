@@ -1,34 +1,62 @@
-use crate::{envelopes::*, Event, Filter, Result, Subscription, SubscriptionOptions};
-use dashmap::DashMap;
+use crate::helpers::{
+    extract_event_id, extract_key_from_sub_id, key_from_sub_id, sub_id_from_key, SubscriptionKey,
+};
+use crate::{envelopes::*, Event, Filter, ID};
+use dashmap::{DashMap, DashSet};
 use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt, TryFutureExt};
 use hyper_tungstenite::tungstenite::client::IntoClientRequest;
-use std::sync::atomic::{AtomicI64, Ordering};
+use slotmap::{SecondaryMap, SlotMap};
 use std::sync::Arc;
+use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 use tokio::time::{interval, Duration};
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{connect_async_tls_with_config, MaybeTlsStream, WebSocketStream};
 use url::Url;
 
-static SUBSCRIPTION_ID_COUNTER: AtomicI64 = AtomicI64::new(0);
+#[derive(Error, Debug)]
+pub enum RelayError {
+    #[error("relay returned ok=false: {0}")]
+    OKFalseWithReason(String),
+    #[error("relay connection error: {0}")]
+    RelayConnectionError(#[from] tokio_tungstenite::tungstenite::Error),
+    #[error("JSON error: {0}")]
+    JSON(#[from] serde_json::Error),
+    #[error("failed to send to {0}: {1}")]
+    PublishSendError(Url, String),
+    #[error("IO error")]
+    IOError(#[from] tokio::sync::oneshot::error::RecvError),
+    #[error("Hex error")]
+    HexEncodingError(#[from] lowercase_hex::FromHexError),
+}
 
+pub type Result<T> = std::result::Result<T, RelayError>;
+
+#[derive(Clone)]
 pub struct Relay {
     pub url: Url,
-    conn_write: Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>,
-    subscriptions: Arc<DashMap<String, Arc<Mutex<Subscription>>>>,
+    // by connection
     challenge: Arc<RwLock<Option<String>>>,
-    // ok_callbacks: Arc<DashMap<ID, Box<dyn Fn(bool, &str) + Send + Sync>>>,
+    conn_write: Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>,
     write_queue: mpsc::Sender<String>,
+
+    // by subscription
+    pub(crate) closers_map: Arc<Mutex<SlotMap<SubscriptionKey, oneshot::Sender<CloseReason>>>>,
+    occurrences_sender_map:
+        Arc<Mutex<SecondaryMap<SubscriptionKey, (mpsc::Sender<Occurrence>, Filter)>>>,
+    id_skippers_map: Arc<Mutex<SecondaryMap<SubscriptionKey, Arc<DashSet<ID>>>>>,
+
+    // by publish
+    ok_callbacks: Arc<DashMap<ID, oneshot::Sender<Result<()>>>>,
 }
 
-pub trait CustomHandler {
-    fn custom_handler(&self);
-}
-
-impl CustomHandler for Relay {
-    fn custom_handler(&self) {}
+pub enum Occurrence {
+    Event(Event),
+    EOSE,
+    Close(CloseReason),
 }
 
 impl Relay {
@@ -36,15 +64,19 @@ impl Relay {
         let (write_sender, mut write_receiver) = mpsc::channel(1);
 
         // connect
-        let (ws_stream, _) = connect_async(url.as_str().into_client_request()?).await?;
+        let (ws_stream, _) =
+            connect_async_tls_with_config(url.as_str().into_client_request()?, None, false, None)
+                .await?;
         let (conn_write, mut conn_read) = ws_stream.split();
 
         let relay = Self {
             url: url.clone(),
             conn_write: Arc::new(Mutex::new(conn_write)),
-            subscriptions: Arc::new(DashMap::new()),
+            closers_map: Arc::new(Mutex::new(SlotMap::with_capacity_and_key(8))),
+            occurrences_sender_map: Arc::new(Mutex::new(SecondaryMap::with_capacity(8))),
+            id_skippers_map: Arc::new(Mutex::new(SecondaryMap::with_capacity(8))),
             challenge: Arc::new(RwLock::new(None)),
-            // ok_callbacks: Arc::new(DashMap::new()),
+            ok_callbacks: Arc::new(DashMap::new()),
             write_queue: write_sender,
         };
 
@@ -76,8 +108,11 @@ impl Relay {
 
         // start message reader
         let pong_writer = relay.conn_write.clone();
-        let subs_map = relay.subscriptions.clone();
+        let closers_map = relay.closers_map.clone();
+        let id_skippers_map = relay.id_skippers_map.clone();
+        let occurrences_sender_map = relay.occurrences_sender_map.clone();
         let challenge = relay.challenge.clone();
+        let ok_callbacks = relay.ok_callbacks.clone();
         tokio::spawn(async move {
             let mut buf = Vec::with_capacity(500);
             loop {
@@ -96,17 +131,26 @@ impl Relay {
                                 .await;
                             continue;
                         }
-                        Ok(Message::Close(f)) => {
+                        Ok(Message::Close(frame)) => {
                             if let Some(on_close) = on_close.take() {
-                                let _ = on_close.send(f.map_or("broken close".to_string(), |c| {
-                                    format!("close ({}) {}", c.code, c.reason)
-                                }));
+                                let _ = on_close.send(
+                                    frame.clone().map_or("broken close".to_string(), |c| {
+                                        format!("close ({}) {}", c.code, c.reason)
+                                    }),
+                                );
+                            }
+                            for (_, closer) in closers_map.lock().await.drain() {
+                                let _ = closer
+                                    .send(CloseReason::RelayConnectionClosedByThem(frame.clone()));
                             }
                             return;
                         }
                         Err(err) => {
                             if let Some(on_close) = on_close.take() {
                                 let _ = on_close.send(format!("error: {}", err.to_string()));
+                            }
+                            for (_, closer) in closers_map.lock().await.drain() {
+                                let _ = closer.send(CloseReason::RelayConnectionError);
                             }
                             return;
                         }
@@ -116,53 +160,100 @@ impl Relay {
 
                 let message = String::from_utf8_lossy(&buf);
 
+                println!("got message: {}", &message);
+
+                match extract_key_from_sub_id(&message) {
+                    None => {}
+                    Some(sub_key) => {
+                        println!("0");
+                        if let Some(id) = extract_event_id(&message) {
+                            println!("00");
+                            if let Some(skip_ids) = id_skippers_map.lock().await.get(sub_key) {
+                                println!("000");
+                                let wasnt = skip_ids.insert(id);
+                                if !wasnt {
+                                    // this id was already known
+                                    println!("///");
+                                    continue;
+                                }
+                                println!("1");
+                            }
+                            println!("1");
+                        }
+                        println!("1");
+                    }
+                }
+
+                println!("...");
+
                 // parse the message
-                if let Ok(envelope) = parse_message(&message) {
-                    match envelope {
-                        Envelope::InEvent(event) => {
-                            if let Some(sub) = subs_map.get(event.subscription_id.as_str()) {
-                                let s = sub.lock().await;
-                                if s.is_eosed()
-                                    && s.filter
-                                        .matches_ignoring_timestamp_constraints(&event.event)
-                                {
-                                    let _ = s.events_sender.send(event.event);
-                                } else if s.filter.matches(&event.event) {
-                                    let _ = s.events_sender.send(event.event);
-                                }
-                            };
+                match parse_message(&message) {
+                    Ok(Envelope::InEvent(event)) => {
+                        if let Some((occ, filter)) = occurrences_sender_map
+                            .lock()
+                            .await
+                            .get(key_from_sub_id(event.subscription_id.as_str()))
+                        {
+                            if filter.matches(&event.event) {
+                                let _ = occ.send(Occurrence::Event(event.event));
+                            }
+                        };
+                    }
+                    Ok(Envelope::Eose(eose)) => {
+                        let key = key_from_sub_id(eose.subscription_id.as_str());
+                        let mut map = occurrences_sender_map.lock().await;
+                        if let Some((occ, filter)) = map.remove(key) {
+                            map.insert(
+                                key,
+                                (
+                                    occ.clone(),
+                                    Filter {
+                                        since: None,
+                                        until: None,
+                                        ..filter.clone()
+                                    },
+                                ),
+                            );
+                        };
+                    }
+                    Ok(Envelope::Ok(ok)) => match ok_callbacks.remove(&ok.event_id) {
+                        Some((_, sender)) => {
+                            let _ = sender.send(match ok.ok {
+                                true => Ok(()),
+                                false => Err(RelayError::OKFalseWithReason(ok.reason)),
+                            });
                         }
-                        Envelope::Eose(eose) => {
-                            if let Some(sub) = subs_map.get(eose.subscription_id.as_str()) {
-                                if let Some(sender) = sub.lock().await.eose_sender.take() {
-                                    let _ = sender.send(());
-                                }
-                            };
-                        }
-                        Envelope::Ok(ok) => {
+                        None => {
                             println!(
-                                "received OK for event {}: {} - {}",
+                                "received OK for unknown event {}: {} - {}",
                                 ok.event_id, ok.ok, ok.reason
                             );
                         }
-                        Envelope::Notice(notice) => {
-                            println!("[{}] received notice: {}", url.as_str(), notice.0);
+                    },
+                    Ok(Envelope::Notice(notice)) => {
+                        println!("[{}] received notice: {}", url.as_str(), notice.0);
+                    }
+                    Ok(Envelope::Closed(closed)) => {
+                        if let Some(sub) = closers_map
+                            .lock()
+                            .await
+                            .remove(key_from_sub_id(&closed.subscription_id))
+                        {
+                            let _ = sub.send(CloseReason::ClosedWithReason(closed.reason));
                         }
-                        Envelope::Closed(closed) => {
-                            if let Some((_, sub)) = subs_map.remove(&closed.subscription_id) {
-                                sub.clone().lock().await.close();
-                            }
-                        }
-                        Envelope::AuthChallenge(authc) => {
-                            let _ = challenge.write().await.insert(authc.challenge);
-                        }
-                        _ => {
-                            println!(
-                                "[{}] unexpected message: {}",
-                                url.as_str(),
-                                envelope.label()
-                            );
-                        }
+                    }
+                    Ok(Envelope::AuthChallenge(authc)) => {
+                        let _ = challenge.write().await.insert(authc.challenge);
+                    }
+                    Ok(envelope) => {
+                        println!(
+                            "[{}] unexpected message: {}",
+                            url.as_str(),
+                            envelope.label()
+                        );
+                    }
+                    Err(err) => {
+                        println!("[{}] wrong message: {}", url.as_str(), err);
                     }
                 }
             }
@@ -172,20 +263,18 @@ impl Relay {
     }
 
     pub async fn publish(&self, event: Event) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.ok_callbacks.insert(event.id.clone(), tx);
+
         let envelope = OutEventEnvelope { event };
         let msg = serde_json::to_string(&envelope)?;
+
         self.write_queue
             .send(msg)
-            .map_err(|err| {
-                format!(
-                    "[{}] failed to send {}: {}",
-                    self.url.as_str(),
-                    serde_json::to_string(&envelope).unwrap(),
-                    err
-                )
-            })
+            .map_err(|err| RelayError::PublishSendError(self.url.clone(), err.0))
             .await?;
-        Ok(())
+
+        rx.await?
     }
 
     /// subscribe to events matching a filter
@@ -193,28 +282,28 @@ impl Relay {
         &self,
         filter: Filter,
         opts: SubscriptionOptions,
-    ) -> Result<Arc<Mutex<Subscription>>> {
-        let counter = SUBSCRIPTION_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let id = if let Some(label) = opts.label {
-            format!("{}:{}", counter, label)
-        } else {
-            format!("{}", counter)
-        };
+    ) -> Result<mpsc::Receiver<Occurrence>> {
+        let (close_sender, close) = oneshot::channel();
+        let key = self.closers_map.lock().await.insert(close_sender);
 
+        let id = sub_id_from_key(&key, &opts.label);
         let msg = format!("[\"REQ\",\"{}\",{}]", id, serde_json::to_string(&filter)?);
-        let (sub, close_notifier) = Subscription::new(id.clone(), filter);
-        let subscription = Arc::new(Mutex::new(sub));
-        self.subscriptions.insert(id.clone(), subscription.clone());
 
-        let subs_map = self.subscriptions.clone();
+        let (occurrences_sender, occurrences) = mpsc::channel::<Occurrence>(1);
+        self.occurrences_sender_map
+            .lock()
+            .await
+            .insert(key, (occurrences_sender, filter));
+
+        if let Some(skip_ids) = opts.skip_ids {
+            self.id_skippers_map.lock().await.insert(key, skip_ids);
+        }
+
         let write_queue = self.write_queue.clone();
-        let close_id = id.clone();
         tokio::spawn(async move {
-            let _ = close_notifier.await;
-            if let Some(_) = subs_map.remove(&close_id) {
-                let msg = format!("[\"CLOSE\",\"{}\"]", id);
-                let _ = write_queue.send(msg).await;
-            }
+            let _ = close.await;
+            let msg = format!("[\"CLOSE\",\"{}\"]", id);
+            let _ = write_queue.send(msg).await;
         });
 
         let _ = self
@@ -223,18 +312,15 @@ impl Relay {
             .map_err(|err| format!("[{}] failed to send {}: {}", self.url.as_str(), msg, err))
             .await;
 
-        Ok(subscription)
+        Ok(occurrences)
     }
 
-    pub async fn close(&self) -> () {
-        for sub in self.subscriptions.iter_mut() {
-            sub.clone().lock().await.close();
+    pub async fn close(self) -> () {
+        for (_, closer) in self.closers_map.lock().await.drain() {
+            let _ = closer.send(CloseReason::RelayConnectionClosedByUs);
         }
 
-        self.subscriptions.clear();
         let _ = self.conn_write.lock().await.close().await;
-
-        // (this doesn't call the "on_close" handler)
     }
 }
 
@@ -242,4 +328,53 @@ impl std::fmt::Display for Relay {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.url)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Filter, Kind};
+    use tokio::time::{timeout, Duration};
+
+    #[tokio::test]
+    async fn test_subscribe() {
+        let url = "wss://nos.lol".parse().unwrap();
+        let relay = Relay::connect(url, None).await.unwrap();
+
+        let filter = Filter {
+            kinds: Some(vec![Kind(1)]),
+            limit: Some(5),
+            ..Default::default()
+        };
+
+        let mut occ = relay
+            .subscribe(filter, SubscriptionOptions::default())
+            .await
+            .unwrap();
+
+        // wait for at least one event or timeout after 10 seconds
+        let result = timeout(Duration::from_secs(1), occ.recv()).await;
+
+        match result {
+            Ok(Some(Occurrence::Event(event))) => {
+                println!("received event from nos.lol: {}", event.id);
+                assert_eq!(event.kind, Kind(1));
+            }
+            Err(err) => panic!("timeout waiting for events from nos.lol: {}", err),
+            _ => panic!("subscription closed without receiving events"),
+        }
+    }
+}
+
+pub enum CloseReason {
+    RelayConnectionClosedByUs,
+    RelayConnectionClosedByThem(Option<CloseFrame>),
+    RelayConnectionError,
+    ClosedWithReason(String),
+}
+
+#[derive(Debug, Default)]
+pub struct SubscriptionOptions {
+    pub label: Option<String>,
+    pub skip_ids: Option<Arc<DashSet<ID>>>,
 }

@@ -1,7 +1,6 @@
 use serde::{de::Error, Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 use thiserror::Error;
-use url::Url;
 
 #[derive(Error, Debug)]
 pub enum IDError {
@@ -197,21 +196,8 @@ impl fmt::Display for Signature {
     }
 }
 
-/// Map of tag names to values for filtering
+/// map of tag names to values for filtering
 pub type TagMap = std::collections::HashMap<String, Vec<String>>;
-
-/// Relay event combining an event with its source relay
-#[derive(Debug, Clone)]
-pub struct RelayEvent {
-    pub event: crate::Event,
-    pub relay_url: Url,
-}
-
-impl fmt::Display for RelayEvent {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[{}] >> {}", self.relay_url, self.event)
-    }
-}
 
 /// event kind type
 #[derive(

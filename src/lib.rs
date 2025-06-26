@@ -25,7 +25,6 @@ pub mod timestamp;
 mod normalize;
 mod pool;
 mod relay;
-mod subscription;
 mod tags;
 mod types;
 
@@ -36,7 +35,6 @@ pub use normalize::*;
 pub use pointers::{EntityPointer, EventPointer, Pointer, ProfilePointer};
 pub use pool::{DirectedFilter, Pool, PoolOptions, PublishResult};
 pub use relay::Relay;
-pub use subscription::{Subscription, SubscriptionOptions};
 pub use tags::{Tag, Tags};
 pub use timestamp::Timestamp;
 pub use types::*;

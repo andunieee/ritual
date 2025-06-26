@@ -1,3 +1,4 @@
+use slotmap::{new_key_type, Key, KeyData};
 use url::Url;
 
 use crate::{PubKey, Timestamp, ID};
@@ -27,20 +28,52 @@ pub fn escape_string(s: &str) -> String {
     result
 }
 
-/// extract subscription ID from JSON string
-pub fn extract_sub_id(json_str: &str) -> Option<String> {
-    // Look for "EVENT" pattern
+// extract subscription ID from JSON string
+new_key_type! { pub struct SubscriptionKey; }
+
+pub fn sub_id_from_key(key: &SubscriptionKey, label: &Option<String>) -> String {
+    let key_data = key.data().as_ffi();
+
+    if let Some(label) = label {
+        let mut idd = vec![0u8; 8 * 2 + 1 + label.len()];
+        println!("key_data: {}", key_data);
+        lowercase_hex::encode_to_slice(key_data.to_le_bytes(), &mut idd[0..8 * 2]).unwrap();
+        idd[8 * 2] = 58; // ':'
+        idd[8 * 2 + 1..].copy_from_slice(label.as_bytes());
+        unsafe { std::str::from_utf8_unchecked(&idd).to_string() }
+    } else {
+        let mut idd = vec![0u8; 8 * 2];
+        lowercase_hex::encode_to_slice(key_data.to_le_bytes(), &mut idd).unwrap();
+        unsafe { std::str::from_utf8_unchecked(&idd).to_string() }
+    }
+}
+
+pub fn extract_key_from_sub_id(json_str: &str) -> Option<SubscriptionKey> {
+    // look for "EVENT" pattern
     let start = json_str.find("\"EVENT\"")?;
     let remaining = &json_str[start + 7..];
 
-    // Find the next quote
+    // find the next quote
     let quote_start = remaining.find('"')?;
     let remaining = &remaining[quote_start + 1..];
 
-    // Find the ending quote
-    let quote_end = remaining.find('"')?;
+    // take the 8 hex bytes that will NECESSARILY be here because we created this
+    Some(key_from_sub_id(&remaining))
+}
 
-    Some(remaining[..quote_end].to_string())
+pub fn key_from_sub_id(sub_id: &str) -> SubscriptionKey {
+    let buf = &sub_id[..8 * 2];
+
+    // do the slotmap thing
+    let key_data = u64::from_le_bytes(
+        lowercase_hex::decode(buf)
+            .expect("subscription id hex prefix broken")
+            .try_into()
+            .unwrap(),
+    );
+    let key = KeyData::from_ffi(key_data);
+
+    SubscriptionKey(key)
 }
 
 /// extract event ID from JSON string
@@ -128,6 +161,40 @@ mod tests {
 
     use super::*;
     use test::Bencher;
+
+    #[test]
+    fn test_sub_id_and_key() {
+        let key_data_u64 = // do this roundabount thing here in the test thing to ensure consistency
+            // (if we just pass '38' it will be changed in the way in because whatever,
+            // the "from_ffi" function only cares about keys it has produced itself)
+            SubscriptionKey(KeyData::from_ffi(38u64)).data().as_ffi();
+        let as_hex = lowercase_hex::encode(key_data_u64.to_le_bytes());
+        let expected_hex = "2600000001000000";
+        assert_eq!(expected_hex, as_hex);
+
+        let subkey = SubscriptionKey(KeyData::from_ffi(key_data_u64));
+        let label = "x34654o9x09jcoznajnawkbr-034ukjs";
+        let expected_id = format!("{}:{}", expected_hex, label);
+        assert_eq!(
+            sub_id_from_key(&subkey, &Some(label.to_string())),
+            expected_id,
+        );
+
+        assert_eq!(
+            extract_key_from_sub_id(&format!(
+                r#"["EVENT", "{}", {{"kind":1,"id":"9429b2e11640bfd86971f0d9f7435199b57e121a363213df11d5b426807e49f5","pubkey":"37a4aef1f8423ca076e4b7d99a8cabff40ddb8231f2a9f01081f15d7fa65c1ba","created_at":1750711742,"tags":[],"content":"hello world","sig":"a1ecbf1636f5e752f1b918a86b065a8031b1387f0785f0ca19b84cc155d7937fece1f3ae53b79d347fbce5555a0f2da8db96334cab154f8d92300f8c1936710c"}}]"#,
+                expected_id
+            )),
+            Some(subkey),
+        );
+
+        assert_eq!(
+            extract_key_from_sub_id(
+                r#"["CLOSED", "xo9x09jcoznajnawkbr-034ukjs", "auth-required: blabla"]"#
+            ),
+            None,
+        );
+    }
 
     #[test]
     fn test_extract_event_id() {
