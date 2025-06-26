@@ -29,6 +29,7 @@ mod tags;
 mod types;
 
 pub use event::Event;
+pub use event_template::EventTemplate;
 pub use filter::Filter;
 pub use keys::SecretKey;
 pub use normalize::*;

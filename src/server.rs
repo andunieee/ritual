@@ -318,6 +318,7 @@ async fn handle_event_envelope(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{relay::Occurrence, EventTemplate, Filter, Kind, Relay, SecretKey, Timestamp};
     use std::{cmp::min, net::SocketAddr};
     use tokio::time::{sleep, Duration};
 
@@ -384,6 +385,89 @@ mod tests {
         assert_eq!(info.description, "");
 
         // cleanup
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_relay_connect_publish_subscribe() {
+        let addr: SocketAddr = "127.0.0.1:8082".parse().unwrap();
+        let relay_internals = Arc::new(RelayInternals {
+            info: RelayInformationDocument {
+                name: "test-relay".to_string(),
+                ..Default::default()
+            },
+            custom_relay: Box::new(Mutex::new(InMemoryRelay {
+                events: Vec::with_capacity(1024),
+            })),
+        });
+
+        // start server in background
+        let server_handle = tokio::spawn(async move { start(relay_internals, addr).await });
+
+        // give server time to start
+        sleep(Duration::from_millis(100)).await;
+
+        // connect to the relay
+        let relay_url = format!("ws://127.0.0.1:8082").parse().unwrap();
+        let relay = Relay::connect(relay_url, None).await.unwrap();
+
+        // create and publish an event
+        let secret_key = SecretKey::generate();
+        let event_template = EventTemplate {
+            created_at: Timestamp::now(),
+            kind: Kind(1),
+            tags: crate::Tags::default(),
+            content: "hello from test".to_string(),
+        };
+        let event = event_template.finalize(secret_key).unwrap();
+        let event_id = event.id;
+
+        // publish the event
+        relay.publish(event.clone()).await.unwrap();
+
+        // subscribe to events
+        let filter = Filter {
+            kinds: Some(vec![Kind(1)]),
+            limit: Some(10),
+            ..Default::default()
+        };
+
+        let mut subscription = relay
+            .subscribe(filter, crate::relay::SubscriptionOptions::default())
+            .await
+            .unwrap();
+
+        // wait for the event to be received
+        let mut received_event = None;
+        let mut got_eose = false;
+
+        while let Some(occurrence) = subscription.recv().await {
+            match occurrence {
+                Occurrence::Event(evt) => {
+                    if evt.id == event_id {
+                        received_event = Some(evt);
+                    }
+                }
+                Occurrence::EOSE => {
+                    got_eose = true;
+                    break;
+                }
+                Occurrence::Close(_) => {
+                    break;
+                }
+            }
+        }
+
+        // verify we received the event
+        assert!(received_event.is_some());
+        assert!(got_eose);
+        let received = received_event.unwrap();
+        assert_eq!(received.id, event_id);
+        assert_eq!(received.content, "hello from test");
+        assert_eq!(received.kind, Kind(1));
+
+        // cleanup
+        relay.close().await;
         server_handle.abort();
     }
 }

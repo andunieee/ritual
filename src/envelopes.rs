@@ -1,5 +1,4 @@
 use crate::{Event, Filter, ID};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -13,7 +12,7 @@ pub enum EnvelopeError {
     InvalidEnvelope(String),
     #[error("unknown envelope label: {0}")]
     UnknownLabel(String),
-    #[error("JSON parsing error")]
+    #[error("JSON parsing error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("hex decoding error")]
     Hex(#[from] lowercase_hex::FromHexError),
@@ -24,8 +23,7 @@ pub enum EnvelopeError {
 pub type Result<T> = std::result::Result<T, EnvelopeError>;
 
 /// nostr message envelopes ("commands")
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
+#[derive(Debug, Clone)]
 pub enum Envelope {
     InEvent(InEventEnvelope),
     OutEvent(OutEventEnvelope),
@@ -62,34 +60,34 @@ impl Envelope {
 }
 
 /// EVENT envelope (incoming from relay)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct InEventEnvelope {
     pub subscription_id: String,
     pub event: Event,
 }
 
 /// EVENT envelope (outgoing to relay)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct OutEventEnvelope {
     pub event: Event,
 }
 
 /// REQ envelope
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ReqEnvelope {
     pub subscription_id: String,
     pub filters: Vec<Filter>,
 }
 
 /// COUNT envelope
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct CountAskEnvelope {
     pub subscription_id: String,
     pub filter: Filter,
 }
 
 /// COUNT envelope
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct CountReplyEnvelope {
     pub subscription_id: String,
     pub count: u32,
@@ -97,30 +95,30 @@ pub struct CountReplyEnvelope {
 }
 
 /// NOTICE envelope
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct NoticeEnvelope(pub String);
 
 /// EOSE envelope
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct EOSEEnvelope {
     pub subscription_id: String,
 }
 
 /// CLOSE envelope
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct CloseEnvelope {
     pub subscription_id: String,
 }
 
 /// CLOSED envelope
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ClosedEnvelope {
     pub subscription_id: String,
     pub reason: String,
 }
 
 /// OK envelope
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct OKEnvelope {
     pub event_id: ID,
     pub ok: bool,
@@ -128,12 +126,12 @@ pub struct OKEnvelope {
 }
 
 /// AUTH envelope
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct AuthEventEnvelope {
     pub event: Event,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct AuthChallengeEnvelope {
     pub challenge: String,
 }
