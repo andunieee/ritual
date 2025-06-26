@@ -27,7 +27,7 @@ pub enum SignatureError {
 }
 
 /// A 32-byte event ID
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ID(pub [u8; 32]);
 
 impl ID {
@@ -77,14 +77,20 @@ impl<'de> Deserialize<'de> for ID {
     }
 }
 
+impl fmt::Debug for ID {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<id:{}>", self.to_hex())
+    }
+}
+
 impl fmt::Display for ID {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "id::{}", self.to_hex())
+        write!(f, "<id={}>", self.to_hex())
     }
 }
 
 /// a 32-byte public key
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PubKey(pub [u8; 32]);
 
 impl PubKey {
@@ -134,14 +140,20 @@ impl<'de> Deserialize<'de> for PubKey {
     }
 }
 
+impl fmt::Debug for PubKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<pk:{}>", self.to_hex())
+    }
+}
+
 impl fmt::Display for PubKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "pk::{}", self.to_hex())
+        write!(f, "<pk={}>", self.to_hex())
     }
 }
 
 /// A 64-byte signature
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Signature(pub [u8; 64]);
 
 impl Signature {
@@ -190,9 +202,15 @@ impl<'de> Deserialize<'de> for Signature {
     }
 }
 
+impl fmt::Debug for Signature {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<sig:{}>", self.to_hex())
+    }
+}
+
 impl fmt::Display for Signature {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "sig::{}", self.to_hex())
+        write!(f, "<sig={}>", self.to_hex())
     }
 }
 

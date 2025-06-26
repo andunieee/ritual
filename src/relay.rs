@@ -44,19 +44,12 @@ pub struct Relay {
     write_queue: mpsc::Sender<String>,
 
     // by subscription
-    pub(crate) closers_map: Arc<Mutex<SlotMap<SubscriptionKey, oneshot::Sender<CloseReason>>>>,
-    occurrences_sender_map:
-        Arc<Mutex<SecondaryMap<SubscriptionKey, (mpsc::Sender<Occurrence>, Filter)>>>,
+    pub(crate) occurrences_sender_map:
+        Arc<Mutex<SlotMap<SubscriptionKey, (mpsc::Sender<Occurrence>, Filter)>>>,
     id_skippers_map: Arc<Mutex<SecondaryMap<SubscriptionKey, Arc<DashSet<ID>>>>>,
 
     // by publish
     ok_callbacks: Arc<DashMap<ID, oneshot::Sender<Result<()>>>>,
-}
-
-pub enum Occurrence {
-    Event(Event),
-    EOSE,
-    Close(CloseReason),
 }
 
 impl Relay {
@@ -72,8 +65,7 @@ impl Relay {
         let relay = Self {
             url: url.clone(),
             conn_write: Arc::new(Mutex::new(conn_write)),
-            closers_map: Arc::new(Mutex::new(SlotMap::with_capacity_and_key(8))),
-            occurrences_sender_map: Arc::new(Mutex::new(SecondaryMap::with_capacity(8))),
+            occurrences_sender_map: Arc::new(Mutex::new(SlotMap::with_capacity_and_key(8))),
             id_skippers_map: Arc::new(Mutex::new(SecondaryMap::with_capacity(8))),
             challenge: Arc::new(RwLock::new(None)),
             ok_callbacks: Arc::new(DashMap::new()),
@@ -100,7 +92,7 @@ impl Relay {
                     .send(Message::Ping(vec![].into()))
                     .await
                 {
-                    println!("ping to failed: {}", err);
+                    println!("ping failed: {}", err);
                     break;
                 }
             }
@@ -108,7 +100,6 @@ impl Relay {
 
         // start message reader
         let pong_writer = relay.conn_write.clone();
-        let closers_map = relay.closers_map.clone();
         let id_skippers_map = relay.id_skippers_map.clone();
         let occurrences_sender_map = relay.occurrences_sender_map.clone();
         let challenge = relay.challenge.clone();
@@ -139,9 +130,12 @@ impl Relay {
                                     }),
                                 );
                             }
-                            for (_, closer) in closers_map.lock().await.drain() {
-                                let _ = closer
-                                    .send(CloseReason::RelayConnectionClosedByThem(frame.clone()));
+                            for (_, (occ, _)) in occurrences_sender_map.lock().await.drain() {
+                                let _ = occ
+                                    .send(Occurrence::Close(
+                                        CloseReason::RelayConnectionClosedByThem(frame.clone()),
+                                    ))
+                                    .await;
                             }
                             return;
                         }
@@ -149,8 +143,10 @@ impl Relay {
                             if let Some(on_close) = on_close.take() {
                                 let _ = on_close.send(format!("error: {}", err.to_string()));
                             }
-                            for (_, closer) in closers_map.lock().await.drain() {
-                                let _ = closer.send(CloseReason::RelayConnectionError);
+                            for (_, (occ, _)) in occurrences_sender_map.lock().await.drain() {
+                                let _ = occ
+                                    .send(Occurrence::Close(CloseReason::RelayConnectionError))
+                                    .await;
                             }
                             return;
                         }
@@ -160,31 +156,20 @@ impl Relay {
 
                 let message = String::from_utf8_lossy(&buf);
 
-                println!("got message: {}", &message);
-
                 match extract_key_from_sub_id(&message) {
                     None => {}
                     Some(sub_key) => {
-                        println!("0");
-                        if let Some(id) = extract_event_id(&message) {
-                            println!("00");
-                            if let Some(skip_ids) = id_skippers_map.lock().await.get(sub_key) {
-                                println!("000");
+                        if let Some(skip_ids) = id_skippers_map.lock().await.get(sub_key) {
+                            if let Some(id) = extract_event_id(&message) {
                                 let wasnt = skip_ids.insert(id);
                                 if !wasnt {
                                     // this id was already known
-                                    println!("///");
                                     continue;
                                 }
-                                println!("1");
                             }
-                            println!("1");
                         }
-                        println!("1");
                     }
                 }
-
-                println!("...");
 
                 // parse the message
                 match parse_message(&message) {
@@ -195,25 +180,20 @@ impl Relay {
                             .get(key_from_sub_id(event.subscription_id.as_str()))
                         {
                             if filter.matches(&event.event) {
-                                let _ = occ.send(Occurrence::Event(event.event));
+                                let _ = occ.send(Occurrence::Event(event.event)).await;
                             }
                         };
                     }
                     Ok(Envelope::Eose(eose)) => {
                         let key = key_from_sub_id(eose.subscription_id.as_str());
                         let mut map = occurrences_sender_map.lock().await;
-                        if let Some((occ, filter)) = map.remove(key) {
-                            map.insert(
-                                key,
-                                (
-                                    occ.clone(),
-                                    Filter {
-                                        since: None,
-                                        until: None,
-                                        ..filter.clone()
-                                    },
-                                ),
-                            );
+                        if let Some(occfilter) = map.get_mut(key) {
+                            // since we got an EOSE our internal filter won't check for since/until anymore
+                            occfilter.1.since = None;
+                            occfilter.1.until = None;
+
+                            // and we dispatch this to the listener
+                            let _ = occfilter.0.send(Occurrence::EOSE).await;
                         };
                     }
                     Ok(Envelope::Ok(ok)) => match ok_callbacks.remove(&ok.event_id) {
@@ -234,12 +214,16 @@ impl Relay {
                         println!("[{}] received notice: {}", url.as_str(), notice.0);
                     }
                     Ok(Envelope::Closed(closed)) => {
-                        if let Some(sub) = closers_map
+                        if let Some((occ, _)) = occurrences_sender_map
                             .lock()
                             .await
                             .remove(key_from_sub_id(&closed.subscription_id))
                         {
-                            let _ = sub.send(CloseReason::ClosedWithReason(closed.reason));
+                            let _ = occ
+                                .send(Occurrence::Close(CloseReason::ClosedByThemWithReason(
+                                    closed.reason,
+                                )))
+                                .await;
                         }
                     }
                     Ok(Envelope::AuthChallenge(authc)) => {
@@ -283,17 +267,27 @@ impl Relay {
         filter: Filter,
         opts: SubscriptionOptions,
     ) -> Result<mpsc::Receiver<Occurrence>> {
-        let (close_sender, close) = oneshot::channel();
-        let key = self.closers_map.lock().await.insert(close_sender);
-
-        let id = sub_id_from_key(&key, &opts.label);
-        let msg = format!("[\"REQ\",\"{}\",{}]", id, serde_json::to_string(&filter)?);
-
+        let mut reqmsg = String::new();
+        let mut closemsg = String::new();
         let (occurrences_sender, occurrences) = mpsc::channel::<Occurrence>(1);
-        self.occurrences_sender_map
+
+        let key = self
+            .occurrences_sender_map
             .lock()
             .await
-            .insert(key, (occurrences_sender, filter));
+            .insert_with_key(|key| {
+                // use the key here to prepare the REQ msg
+                let id = sub_id_from_key(&key, &opts.label);
+                reqmsg = format!(
+                    "[\"REQ\",\"{}\",{}]",
+                    id,
+                    serde_json::to_string(&filter).unwrap()
+                );
+                closemsg = format!("[\"CLOSE\",\"{}\"]", id);
+
+                // and store this tuple
+                (occurrences_sender.clone(), filter)
+            });
 
         if let Some(skip_ids) = opts.skip_ids {
             self.id_skippers_map.lock().await.insert(key, skip_ids);
@@ -301,23 +295,31 @@ impl Relay {
 
         let write_queue = self.write_queue.clone();
         tokio::spawn(async move {
-            let _ = close.await;
-            let msg = format!("[\"CLOSE\",\"{}\"]", id);
-            let _ = write_queue.send(msg).await;
+            // when the listener stops listening from this subscription we close it automatically
+            occurrences_sender.closed().await;
+            let _ = write_queue.send(closemsg).await;
         });
 
         let _ = self
             .write_queue
-            .send(msg.clone())
-            .map_err(|err| format!("[{}] failed to send {}: {}", self.url.as_str(), msg, err))
+            .send(reqmsg)
+            .map_err(|err| {
+                format!(
+                    "[{}] failed to fire subscription: {}",
+                    self.url.as_str(),
+                    err
+                )
+            })
             .await;
 
         Ok(occurrences)
     }
 
     pub async fn close(self) -> () {
-        for (_, closer) in self.closers_map.lock().await.drain() {
-            let _ = closer.send(CloseReason::RelayConnectionClosedByUs);
+        for (_, (occ, _)) in self.occurrences_sender_map.lock().await.drain() {
+            let _ = occ
+                .send(Occurrence::Close(CloseReason::RelayConnectionClosedByUs))
+                .await;
         }
 
         let _ = self.conn_write.lock().await.close().await;
@@ -334,7 +336,6 @@ impl std::fmt::Display for Relay {
 mod tests {
     use super::*;
     use crate::{Filter, Kind};
-    use tokio::time::{timeout, Duration};
 
     #[tokio::test]
     async fn test_subscribe() {
@@ -347,34 +348,48 @@ mod tests {
             ..Default::default()
         };
 
-        let mut occ = relay
+        let mut sub = relay
             .subscribe(filter, SubscriptionOptions::default())
             .await
             .unwrap();
 
-        // wait for at least one event or timeout after 10 seconds
-        let result = timeout(Duration::from_secs(1), occ.recv()).await;
-
-        match result {
-            Ok(Some(Occurrence::Event(event))) => {
-                println!("received event from nos.lol: {}", event.id);
-                assert_eq!(event.kind, Kind(1));
+        let mut pre_eose_count = 0;
+        while let Some(occ) = sub.recv().await {
+            match occ {
+                Occurrence::Event(_) => {
+                    pre_eose_count += 1;
+                }
+                Occurrence::EOSE => {
+                    break;
+                }
+                Occurrence::Close(_) => {
+                    panic!("shouldn't close");
+                }
             }
-            Err(err) => panic!("timeout waiting for events from nos.lol: {}", err),
-            _ => panic!("subscription closed without receiving events"),
         }
+
+        assert_eq!(pre_eose_count, 5);
     }
 }
 
+#[derive(Debug)]
 pub enum CloseReason {
     RelayConnectionClosedByUs,
     RelayConnectionClosedByThem(Option<CloseFrame>),
     RelayConnectionError,
-    ClosedWithReason(String),
+    ClosedByUs,
+    ClosedByThemWithReason(String),
 }
 
 #[derive(Debug, Default)]
 pub struct SubscriptionOptions {
     pub label: Option<String>,
     pub skip_ids: Option<Arc<DashSet<ID>>>,
+}
+
+#[derive(Debug)]
+pub enum Occurrence {
+    Event(Event),
+    EOSE,
+    Close(CloseReason),
 }

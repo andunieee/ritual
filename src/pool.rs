@@ -252,8 +252,8 @@ mod tests {
 
         // should return the same relay instance
         assert!(std::ptr::eq(
-            relay1.closers_map.as_ref() as *const _,
-            relay2.closers_map.as_ref() as *const _
+            relay1.occurrences_sender_map.as_ref() as *const _,
+            relay2.occurrences_sender_map.as_ref() as *const _
         ));
     }
 }
