@@ -33,6 +33,7 @@ reqwest = { version = "0.12.20", default-features = false, features = ["json", "
 lowercase-hex = "0.1.0"
 ahash = "0.8.12"
 slotmap = "1.0.7"
+glidesort = "0.1.2"
 
 [dev-dependencies]
 tempfile = "3.0"

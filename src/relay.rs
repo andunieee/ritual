@@ -179,8 +179,10 @@ impl Relay {
                             .await
                             .get(key_from_sub_id(event.subscription_id.as_str()))
                         {
-                            if filter.matches(&event.event) {
+                            if filter.matches(&event.event) && event.event.verify_signature() {
                                 let _ = occ.send(Occurrence::Event(event.event)).await;
+                            } else {
+                                // TODO: penalize this relay?
                             }
                         };
                     }

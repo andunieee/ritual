@@ -4,7 +4,9 @@ use crate::{
     Event, Filter, Relay, Result,
 };
 use dashmap::{DashMap, DashSet};
+use futures::future::join_all;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio::sync::{mpsc, oneshot};
 
 /// pool manages connections to multiple relays
@@ -142,24 +144,28 @@ impl Pool {
         rx
     }
 
-    /// subscribe to events from multiple relays
-    pub async fn subscribe(
+    /// subscribe to events from multiple relays, stop on EOSE, return a sorted list
+    pub async fn query(
         &self,
         urls: Vec<String>,
         filter: Filter,
         label: Option<String>,
-    ) -> mpsc::Receiver<Occurrence> {
-        let (tx, rx) = mpsc::channel(1);
+    ) -> Vec<Event> {
+        let events = Arc::new(Mutex::new(Vec::with_capacity(
+            filter.limit.unwrap_or(500) * urls.len() / 2,
+        )));
         let skip_ids = Arc::new(DashSet::new());
+        let mut futures = Vec::with_capacity(urls.len());
 
         for url in urls {
-            let tx = tx.clone();
+            let url = url.clone();
             let filter = filter.clone();
             let pool = self.clone();
             let label = label.clone();
             let skip_ids = skip_ids.clone();
+            let events = events.clone();
 
-            tokio::spawn(async move {
+            let s = tokio::spawn(async move {
                 if let Ok(relay) = pool.ensure_relay(&url).await {
                     if let Ok(mut sub) = relay
                         .subscribe(
@@ -173,14 +179,27 @@ impl Pool {
                         .await
                     {
                         while let Some(occ) = sub.recv().await {
-                            let _ = tx.send(occ).await;
+                            match occ {
+                                Occurrence::Event(event) => {
+                                    events.lock().await.push(event);
+                                }
+                                Occurrence::EOSE => return,
+                                Occurrence::Close(_) => return,
+                            }
                         }
                     }
                 }
             });
+
+            futures.push(s);
         }
 
-        rx
+        join_all(futures).await;
+        let mut r = events.lock().await;
+        let mut res = std::mem::take(&mut *r);
+
+        glidesort::sort_by_key(&mut res, |event| u32::MAX - event.created_at.0);
+        res
     }
 
     /// close the pool
@@ -204,44 +223,41 @@ impl Clone for Pool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
+    use crate::Kind;
+
     use super::*;
 
-    // #[tokio::test]
-    // async fn test_pool_subscribe_multiple() {
-    //     let pool = Pool::new(PoolOptions::default());
+    #[tokio::test]
+    async fn test_pool_subscribe_multiple() {
+        let pool = Pool::new(PoolOptions::default());
 
-    //     let urls = vec!["wss://nos.lol".to_string(), "wss://nostr.wine".to_string()];
+        let urls = vec![
+            "wss://nos.lol".to_string(),
+            "wss://nostr.wine".to_string(),
+            "wss://nostr.mom".to_string(),
+            "wss://relay.damus.io".to_string(),
+            "wss://relay.primal.net".to_string(),
+        ];
 
-    //     let filter = Filter {
-    //         kinds: Some(vec![Kind(1), Kind(1111)]),
-    //         limit: Some(5),
-    //         ..Default::default()
-    //     };
+        let filter = Filter {
+            kinds: Some(vec![Kind(1), Kind(1111)]),
+            limit: Some(5),
+            ..Default::default()
+        };
 
-    //     let mut rx = pool.subscribe(urls, filter, Some("test".to_string())).await;
+        let events = pool.query(urls, filter, Some("test".to_string())).await;
 
-    //     // collect events for up to 15 seconds or until we get at least 3 events
-    //     let mut events = Vec::new();
-    //     let start = std::time::Instant::now();
+        assert!(events.len() > 10); // should be greater than 10 since we're reading 5 from each relay
+        assert!(events.len() < 25); // but still we should have eliminated some duplicates so less than 25
 
-    //     while events.len() < 3 && start.elapsed() < Duration::from_secs(15) {
-    //         match timeout(Duration::from_secs(5), rx.recv()).await {
-    //             Ok(Some(event)) => {
-    //                 println!("received event: {} (kind {})", event.id, event.kind);
-    //                 assert!(event.kind == Kind(1) || event.kind == Kind(1111));
-    //                 events.push(event);
-    //             }
-    //             Ok(None) => break,
-    //             Err(_) => break,
-    //         }
-    //     }
-
-    //     assert!(
-    //         !events.is_empty(),
-    //         "should have received at least one event"
-    //     );
-    //     println!("received {} events total", events.len());
-    // }
+        // ok let's be sure there are no duplicates
+        let mut ids = HashSet::new();
+        for event in events.iter() {
+            assert!(ids.insert(event.id));
+        }
+    }
 
     #[tokio::test]
     async fn test_pool_ensure() {

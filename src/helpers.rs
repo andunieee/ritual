@@ -36,7 +36,6 @@ pub fn sub_id_from_key(key: &SubscriptionKey, label: &Option<String>) -> String 
 
     if let Some(label) = label {
         let mut idd = vec![0u8; 8 * 2 + 1 + label.len()];
-        println!("key_data: {}", key_data);
         lowercase_hex::encode_to_slice(key_data.to_le_bytes(), &mut idd[0..8 * 2]).unwrap();
         idd[8 * 2] = 58; // ':'
         idd[8 * 2 + 1..].copy_from_slice(label.as_bytes());
