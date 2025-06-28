@@ -4,9 +4,7 @@
 //! using hyper for HTTP and WebSocket handling.
 
 use crate::{
-    envelopes::Envelope,
-    nip11::RelayInformationDocument,
-    normalize_ok_message, Event, Filter,
+    envelopes::Envelope, nip11::RelayInformationDocument, normalize_ok_message, Event, Filter,
 };
 use bytes::Bytes;
 use futures::{stream::SplitSink, SinkExt, StreamExt};
@@ -80,8 +78,13 @@ pub async fn start(ri: Arc<RelayInternals>, addr: SocketAddr) -> Result<()> {
                                             while let Some(Ok(msg)) = rx.next().await {
                                                 match msg {
                                                     Message::Text(msg_text) => {
-                                                        match serde_json::from_str::<Envelope>(msg_text.as_str()) {
-                                                            Ok(Envelope::Req { subscription_id, filters }) => {
+                                                        match serde_json::from_str::<Envelope>(
+                                                            msg_text.as_str(),
+                                                        ) {
+                                                            Ok(Envelope::Req {
+                                                                subscription_id,
+                                                                filters,
+                                                            }) => {
                                                                 handle_req_envelope(
                                                                     &ri,
                                                                     tx.clone(),
@@ -109,7 +112,9 @@ pub async fn start(ri: Arc<RelayInternals>, addr: SocketAddr) -> Result<()> {
                                                                 let _ = tx
                                                                     .lock()
                                                                     .await
-                                                                    .send(Message::text(notice.to_string()))
+                                                                    .send(Message::text(
+                                                                        notice.to_string(),
+                                                                    ))
                                                                     .await;
                                                             }
                                                             Err(err) => {
@@ -117,7 +122,9 @@ pub async fn start(ri: Arc<RelayInternals>, addr: SocketAddr) -> Result<()> {
                                                                 let _ = tx
                                                                     .lock()
                                                                     .await
-                                                                    .send(Message::text(notice.to_string()))
+                                                                    .send(Message::text(
+                                                                        notice.to_string(),
+                                                                    ))
                                                                     .await;
                                                             }
                                                         }
@@ -243,7 +250,8 @@ async fn handle_event_envelope(
 ) {
     // check event ID
     if !event.check_id() {
-        let ok_json = serde_json::json!(["OK", event.id, false, "invalid: id is computed incorrectly"]);
+        let ok_json =
+            serde_json::json!(["OK", event.id, false, "invalid: id is computed incorrectly"]);
         let _ = tx
             .lock()
             .await
@@ -274,7 +282,8 @@ async fn handle_event_envelope(
                 .await;
         }
         Err(e) => {
-            let ok_json = serde_json::json!(["OK", event.id, false, normalize_ok_message(&e, "error")]);
+            let ok_json =
+                serde_json::json!(["OK", event.id, false, normalize_ok_message(&e, "error")]);
             let _ = tx
                 .lock()
                 .await
@@ -287,7 +296,10 @@ async fn handle_event_envelope(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{relay::Occurrence, EventTemplate, Filter, Kind, Relay, SecretKey, Timestamp};
+    use crate::{
+        relay::Occurrence, EventTemplate, Filter, Kind, Pool, PoolOptions, Relay, SecretKey,
+        Timestamp,
+    };
     use std::{cmp::min, net::SocketAddr};
     use tokio::time::{sleep, Duration};
 
@@ -299,6 +311,90 @@ mod tests {
         fn handle_event(&mut self, event: &Event) -> std::result::Result<(), String> {
             self.events.push(event.clone());
             Ok(())
+        }
+
+        fn handle_request(&mut self, filter: &Filter) -> std::result::Result<Vec<Event>, String> {
+            let mut resp = Vec::with_capacity(min(
+                filter.limit.unwrap_or(500),
+                filter.get_theoretical_limit(),
+            ));
+            for event in &self.events {
+                if filter.matches(&event) {
+                    resp.push(event.clone());
+                }
+            }
+            Ok(resp)
+        }
+    }
+
+    struct EvenTimestampRelay {
+        events: Vec<Event>,
+    }
+
+    impl CustomRelay for EvenTimestampRelay {
+        fn handle_event(&mut self, event: &Event) -> std::result::Result<(), String> {
+            if event.created_at.0 % 2 == 0 {
+                self.events.push(event.clone());
+                Ok(())
+            } else {
+                Err("only even timestamps allowed".to_string())
+            }
+        }
+
+        fn handle_request(&mut self, filter: &Filter) -> std::result::Result<Vec<Event>, String> {
+            let mut resp = Vec::with_capacity(min(
+                filter.limit.unwrap_or(500),
+                filter.get_theoretical_limit(),
+            ));
+            for event in &self.events {
+                if filter.matches(&event) {
+                    resp.push(event.clone());
+                }
+            }
+            Ok(resp)
+        }
+    }
+
+    struct OddTimestampRelay {
+        events: Vec<Event>,
+    }
+
+    impl CustomRelay for OddTimestampRelay {
+        fn handle_event(&mut self, event: &Event) -> std::result::Result<(), String> {
+            if event.created_at.0 % 2 == 1 {
+                self.events.push(event.clone());
+                Ok(())
+            } else {
+                Err("only odd timestamps allowed".to_string())
+            }
+        }
+
+        fn handle_request(&mut self, filter: &Filter) -> std::result::Result<Vec<Event>, String> {
+            let mut resp = Vec::with_capacity(min(
+                filter.limit.unwrap_or(500),
+                filter.get_theoretical_limit(),
+            ));
+            for event in &self.events {
+                if filter.matches(&event) {
+                    resp.push(event.clone());
+                }
+            }
+            Ok(resp)
+        }
+    }
+
+    struct MultipleOfThreeRelay {
+        events: Vec<Event>,
+    }
+
+    impl CustomRelay for MultipleOfThreeRelay {
+        fn handle_event(&mut self, event: &Event) -> std::result::Result<(), String> {
+            if event.created_at.0 % 3 == 0 {
+                self.events.push(event.clone());
+                Ok(())
+            } else {
+                Err("only timestamps that are multiples of 3 allowed".to_string())
+            }
         }
 
         fn handle_request(&mut self, filter: &Filter) -> std::result::Result<Vec<Event>, String> {
@@ -438,5 +534,175 @@ mod tests {
         // cleanup
         relay.close().await;
         server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_pool_with_filtered_relays() {
+        // start three relays with different filtering logic
+        let even_addr: SocketAddr = "127.0.0.1:8083".parse().unwrap();
+        let odd_addr: SocketAddr = "127.0.0.1:8084".parse().unwrap();
+        let multiple_of_three_addr: SocketAddr = "127.0.0.1:8085".parse().unwrap();
+
+        let even_relay = Arc::new(RelayInternals {
+            info: RelayInformationDocument {
+                name: "even-relay".to_string(),
+                ..Default::default()
+            },
+            custom_relay: Box::new(Mutex::new(EvenTimestampRelay {
+                events: Vec::with_capacity(1024),
+            })),
+        });
+
+        let odd_relay = Arc::new(RelayInternals {
+            info: RelayInformationDocument {
+                name: "odd-relay".to_string(),
+                ..Default::default()
+            },
+            custom_relay: Box::new(Mutex::new(OddTimestampRelay {
+                events: Vec::with_capacity(1024),
+            })),
+        });
+
+        let multiple_of_three_relay = Arc::new(RelayInternals {
+            info: RelayInformationDocument {
+                name: "multiple-of-three-relay".to_string(),
+                ..Default::default()
+            },
+            custom_relay: Box::new(Mutex::new(MultipleOfThreeRelay {
+                events: Vec::with_capacity(1024),
+            })),
+        });
+
+        // start servers in background
+        let even_handle = tokio::spawn(async move { start(even_relay, even_addr).await });
+        let odd_handle = tokio::spawn(async move { start(odd_relay, odd_addr).await });
+        let multiple_of_three_handle =
+            tokio::spawn(
+                async move { start(multiple_of_three_relay, multiple_of_three_addr).await },
+            );
+
+        // give servers time to start
+        sleep(Duration::from_millis(200)).await;
+
+        // create pool and relay urls
+        let mut pool = Pool::new(PoolOptions::default());
+        let relay_urls = vec![
+            "ws://127.0.0.1:8083".to_string(),
+            "ws://127.0.0.1:8084".to_string(),
+            "ws://127.0.0.1:8085".to_string(),
+        ];
+
+        // create events with different timestamps
+        let secret_key = SecretKey::generate();
+        let mut events = Vec::new();
+
+        // create events with timestamps: 100, 101, 102, 103, 104, 105, 106, 107, 108, 109
+        for i in 100..110 {
+            let event_template = EventTemplate {
+                created_at: Timestamp(i),
+                kind: Kind(1),
+                tags: crate::Tags::default(),
+                content: format!("event with timestamp {}", i),
+            };
+            let event = event_template.finalize(secret_key).unwrap();
+            events.push(event);
+        }
+
+        // publish all events to all relays
+        for event in &events {
+            let mut publish_results = pool.publish_many(relay_urls.clone(), event.clone()).await;
+
+            // wait for all publish results
+            let mut results = Vec::new();
+            while let Some(result) = publish_results.recv().await {
+                results.push(result);
+            }
+
+            // we expect 3 results (one from each relay)
+            assert_eq!(results.len(), 3);
+        }
+
+        // query each relay individually
+        let filter = Filter {
+            kinds: Some(vec![Kind(1)]),
+            limit: Some(20),
+            ..Default::default()
+        };
+
+        // query even relay (should have events with timestamps: 100, 102, 104, 106, 108)
+        let even_events = pool
+            .query(
+                vec!["ws://127.0.0.1:8083".to_string()],
+                filter.clone(),
+                None,
+            )
+            .await;
+        assert_eq!(even_events.len(), 5);
+        for event in &even_events {
+            assert_eq!(
+                event.created_at.0 % 2,
+                0,
+                "even relay should only have events with even timestamps"
+            );
+        }
+
+        // query odd relay (should have events with timestamps: 101, 103, 105, 107, 109)
+        let odd_events = pool
+            .query(
+                vec!["ws://127.0.0.1:8084".to_string()],
+                filter.clone(),
+                None,
+            )
+            .await;
+        assert_eq!(odd_events.len(), 5);
+        for event in &odd_events {
+            assert_eq!(
+                event.created_at.0 % 2,
+                1,
+                "odd relay should only have events with odd timestamps"
+            );
+        }
+
+        // query multiple of three relay (should have events with timestamps: 102, 105, 108)
+        let multiple_of_three_events = pool
+            .query(
+                vec!["ws://127.0.0.1:8085".to_string()],
+                filter.clone(),
+                None,
+            )
+            .await;
+        assert_eq!(multiple_of_three_events.len(), 3);
+        for event in &multiple_of_three_events {
+            assert_eq!(event.created_at.0 % 3, 0, "multiple of three relay should only have events with timestamps that are multiples of 3");
+        }
+
+        // verify specific timestamps
+        let even_timestamps: Vec<u32> = even_events.iter().map(|e| e.created_at.0).collect();
+        assert!(even_timestamps.contains(&100));
+        assert!(even_timestamps.contains(&102));
+        assert!(even_timestamps.contains(&104));
+        assert!(even_timestamps.contains(&106));
+        assert!(even_timestamps.contains(&108));
+
+        let odd_timestamps: Vec<u32> = odd_events.iter().map(|e| e.created_at.0).collect();
+        assert!(odd_timestamps.contains(&101));
+        assert!(odd_timestamps.contains(&103));
+        assert!(odd_timestamps.contains(&105));
+        assert!(odd_timestamps.contains(&107));
+        assert!(odd_timestamps.contains(&109));
+
+        let multiple_of_three_timestamps: Vec<u32> = multiple_of_three_events
+            .iter()
+            .map(|e| e.created_at.0)
+            .collect();
+        assert!(multiple_of_three_timestamps.contains(&102));
+        assert!(multiple_of_three_timestamps.contains(&105));
+        assert!(multiple_of_three_timestamps.contains(&108));
+
+        // cleanup
+        pool.close().await;
+        even_handle.abort();
+        odd_handle.abort();
+        multiple_of_three_handle.abort();
     }
 }
