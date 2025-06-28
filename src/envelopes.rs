@@ -1,5 +1,5 @@
 use crate::{Event, Filter, Kind, ID};
-use serde::{de, de::SeqAccess, de::Visitor, Deserialize, Deserializer};
+use serde::{de, de::SeqAccess, de::Visitor, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::fmt;
 use thiserror::Error;
@@ -25,7 +25,7 @@ pub enum EnvelopeError {
 pub type Result<T> = std::result::Result<T, EnvelopeError>;
 
 /// nostr message envelopes ("commands")
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Envelope {
     /// EVENT envelope (incoming from relay)
     InEvent {
@@ -71,6 +71,131 @@ pub enum Envelope {
     AuthChallenge { challenge: String },
     /// AUTH envelope (event)
     AuthEvent { event: Event },
+}
+
+impl Serialize for Envelope {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeSeq;
+
+        match self {
+            Envelope::InEvent {
+                subscription_id,
+                event,
+            } => {
+                let mut seq = serializer.serialize_seq(Some(3))?;
+                seq.serialize_element("EVENT")?;
+                seq.serialize_element(subscription_id)?;
+                seq.serialize_element(event)?;
+                seq.end()
+            }
+            Envelope::OutEvent { event } => {
+                let mut seq = serializer.serialize_seq(Some(2))?;
+                seq.serialize_element("EVENT")?;
+                seq.serialize_element(event)?;
+                seq.end()
+            }
+            Envelope::Req {
+                subscription_id,
+                filters,
+            } => {
+                let mut seq = serializer.serialize_seq(Some(2 + filters.len()))?;
+                seq.serialize_element("REQ")?;
+                seq.serialize_element(subscription_id)?;
+                for filter in filters {
+                    seq.serialize_element(filter)?;
+                }
+                seq.end()
+            }
+            Envelope::CountAsk {
+                subscription_id,
+                filter,
+            } => {
+                let mut seq = serializer.serialize_seq(Some(3))?;
+                seq.serialize_element("COUNT")?;
+                seq.serialize_element(subscription_id)?;
+                seq.serialize_element(filter)?;
+                seq.end()
+            }
+            Envelope::CountReply {
+                subscription_id,
+                count,
+                hyperloglog,
+            } => {
+                let mut seq = serializer.serialize_seq(Some(3))?;
+                seq.serialize_element("COUNT")?;
+                seq.serialize_element(subscription_id)?;
+
+                let mut result = serde_json::Map::new();
+                result.insert(
+                    "count".to_string(),
+                    serde_json::Value::Number((*count).into()),
+                );
+
+                if let Some(hll) = hyperloglog {
+                    let hll_hex = lowercase_hex::encode(hll);
+                    result.insert("hll".to_string(), serde_json::Value::String(hll_hex));
+                }
+
+                seq.serialize_element(&result)?;
+                seq.end()
+            }
+            Envelope::Notice(message) => {
+                let mut seq = serializer.serialize_seq(Some(2))?;
+                seq.serialize_element("NOTICE")?;
+                seq.serialize_element(message)?;
+                seq.end()
+            }
+            Envelope::Eose { subscription_id } => {
+                let mut seq = serializer.serialize_seq(Some(2))?;
+                seq.serialize_element("EOSE")?;
+                seq.serialize_element(subscription_id)?;
+                seq.end()
+            }
+            Envelope::Close { subscription_id } => {
+                let mut seq = serializer.serialize_seq(Some(2))?;
+                seq.serialize_element("CLOSE")?;
+                seq.serialize_element(subscription_id)?;
+                seq.end()
+            }
+            Envelope::Closed {
+                subscription_id,
+                reason,
+            } => {
+                let mut seq = serializer.serialize_seq(Some(3))?;
+                seq.serialize_element("CLOSED")?;
+                seq.serialize_element(subscription_id)?;
+                seq.serialize_element(reason)?;
+                seq.end()
+            }
+            Envelope::Ok {
+                event_id,
+                ok,
+                reason,
+            } => {
+                let mut seq = serializer.serialize_seq(Some(4))?;
+                seq.serialize_element("OK")?;
+                seq.serialize_element(&event_id.to_hex())?;
+                seq.serialize_element(ok)?;
+                seq.serialize_element(reason)?;
+                seq.end()
+            }
+            Envelope::AuthChallenge { challenge } => {
+                let mut seq = serializer.serialize_seq(Some(2))?;
+                seq.serialize_element("AUTH")?;
+                seq.serialize_element(challenge)?;
+                seq.end()
+            }
+            Envelope::AuthEvent { event } => {
+                let mut seq = serializer.serialize_seq(Some(2))?;
+                seq.serialize_element("AUTH")?;
+                seq.serialize_element(event)?;
+                seq.end()
+            }
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for Envelope {
@@ -310,7 +435,7 @@ mod tests {
 
         let envelope: Envelope = serde_json::from_str(json).unwrap();
 
-        match envelope {
+        match envelope.clone() {
             Envelope::InEvent {
                 subscription_id,
                 event,
@@ -328,6 +453,11 @@ mod tests {
             }
             _ => panic!("expected InEvent envelope"),
         }
+
+        // test serialization round-trip
+        let serialized = serde_json::to_string(&envelope).unwrap();
+        let deserialized: Envelope = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(envelope, deserialized);
     }
 
     #[test]
@@ -336,7 +466,7 @@ mod tests {
 
         let envelope: Envelope = serde_json::from_str(json).unwrap();
 
-        match envelope {
+        match envelope.clone() {
             Envelope::OutEvent { event } => {
                 assert_eq!(
                     event.id,
@@ -350,6 +480,11 @@ mod tests {
             }
             _ => panic!("expected OutEvent envelope"),
         }
+
+        // test serialization round-trip
+        let serialized = serde_json::to_string(&envelope).unwrap();
+        let deserialized: Envelope = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(envelope, deserialized);
     }
 
     #[test]
@@ -358,7 +493,7 @@ mod tests {
 
         let envelope: Envelope = serde_json::from_str(json).unwrap();
 
-        match envelope {
+        match envelope.clone() {
             Envelope::Req {
                 subscription_id,
                 filters,
@@ -377,6 +512,11 @@ mod tests {
             }
             _ => panic!("expected Req envelope"),
         }
+
+        // test serialization round-trip
+        let serialized = serde_json::to_string(&envelope).unwrap();
+        let deserialized: Envelope = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(envelope, deserialized);
     }
 
     #[test]
@@ -384,7 +524,8 @@ mod tests {
         let json = r#"["COUNT", "sub789", {"kinds":[1]}]"#;
 
         let envelope: Envelope = serde_json::from_str(json).unwrap();
-        match envelope {
+
+        match envelope.clone() {
             Envelope::CountAsk {
                 subscription_id,
                 filter,
@@ -394,6 +535,11 @@ mod tests {
             }
             got => panic!("expected CountAsk envelope, got {:?}", got),
         }
+
+        // test serialization round-trip
+        let serialized = serde_json::to_string(&envelope).unwrap();
+        let deserialized: Envelope = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(envelope, deserialized);
     }
 
     #[test]
@@ -402,7 +548,7 @@ mod tests {
 
         let envelope: Envelope = serde_json::from_str(json).unwrap();
 
-        match envelope {
+        match envelope.clone() {
             Envelope::CountReply {
                 subscription_id,
                 count,
@@ -414,6 +560,11 @@ mod tests {
             }
             _ => panic!("expected CountReply envelope"),
         }
+
+        // test serialization round-trip
+        let serialized = serde_json::to_string(&envelope).unwrap();
+        let deserialized: Envelope = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(envelope, deserialized);
     }
 
     #[test]
@@ -423,7 +574,7 @@ mod tests {
 
         let envelope: Envelope = serde_json::from_str(&json).unwrap();
 
-        match envelope {
+        match envelope.clone() {
             Envelope::CountReply {
                 subscription_id,
                 count,
@@ -436,6 +587,11 @@ mod tests {
             }
             _ => panic!("expected CountReply envelope"),
         }
+
+        // test serialization round-trip
+        let serialized = serde_json::to_string(&envelope).unwrap();
+        let deserialized: Envelope = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(envelope, deserialized);
     }
 
     #[test]
@@ -444,12 +600,17 @@ mod tests {
 
         let envelope: Envelope = serde_json::from_str(json).unwrap();
 
-        match envelope {
+        match envelope.clone() {
             Envelope::Notice(message) => {
                 assert_eq!(message, "this is a notice message");
             }
             _ => panic!("expected Notice envelope"),
         }
+
+        // test serialization round-trip
+        let serialized = serde_json::to_string(&envelope).unwrap();
+        let deserialized: Envelope = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(envelope, deserialized);
     }
 
     #[test]
@@ -458,12 +619,17 @@ mod tests {
 
         let envelope: Envelope = serde_json::from_str(json).unwrap();
 
-        match envelope {
+        match envelope.clone() {
             Envelope::Eose { subscription_id } => {
                 assert_eq!(subscription_id, "sub123");
             }
             _ => panic!("expected Eose envelope"),
         }
+
+        // test serialization round-trip
+        let serialized = serde_json::to_string(&envelope).unwrap();
+        let deserialized: Envelope = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(envelope, deserialized);
     }
 
     #[test]
@@ -472,12 +638,17 @@ mod tests {
 
         let envelope: Envelope = serde_json::from_str(json).unwrap();
 
-        match envelope {
+        match envelope.clone() {
             Envelope::Close { subscription_id } => {
                 assert_eq!(subscription_id, "sub123");
             }
             _ => panic!("expected Close envelope"),
         }
+
+        // test serialization round-trip
+        let serialized = serde_json::to_string(&envelope).unwrap();
+        let deserialized: Envelope = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(envelope, deserialized);
     }
 
     #[test]
@@ -486,7 +657,7 @@ mod tests {
 
         let envelope: Envelope = serde_json::from_str(json).unwrap();
 
-        match envelope {
+        match envelope.clone() {
             Envelope::Closed {
                 subscription_id,
                 reason,
@@ -496,6 +667,11 @@ mod tests {
             }
             _ => panic!("expected Closed envelope"),
         }
+
+        // test serialization round-trip
+        let serialized = serde_json::to_string(&envelope).unwrap();
+        let deserialized: Envelope = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(envelope, deserialized);
     }
 
     #[test]
@@ -504,7 +680,7 @@ mod tests {
 
         let envelope: Envelope = serde_json::from_str(json).unwrap();
 
-        match envelope {
+        match envelope.clone() {
             Envelope::Ok {
                 event_id,
                 ok,
@@ -522,6 +698,11 @@ mod tests {
             }
             _ => panic!("expected Ok envelope"),
         }
+
+        // test serialization round-trip
+        let serialized = serde_json::to_string(&envelope).unwrap();
+        let deserialized: Envelope = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(envelope, deserialized);
     }
 
     #[test]
@@ -530,7 +711,7 @@ mod tests {
 
         let envelope: Envelope = serde_json::from_str(json).unwrap();
 
-        match envelope {
+        match envelope.clone() {
             Envelope::Ok {
                 event_id,
                 ok,
@@ -548,6 +729,11 @@ mod tests {
             }
             _ => panic!("expected Ok envelope"),
         }
+
+        // test serialization round-trip
+        let serialized = serde_json::to_string(&envelope).unwrap();
+        let deserialized: Envelope = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(envelope, deserialized);
     }
 
     #[test]
@@ -556,12 +742,17 @@ mod tests {
 
         let envelope: Envelope = serde_json::from_str(json).unwrap();
 
-        match envelope {
+        match envelope.clone() {
             Envelope::AuthChallenge { challenge } => {
                 assert_eq!(challenge, "challenge-string-here");
             }
             _ => panic!("expected AuthChallenge envelope"),
         }
+
+        // test serialization round-trip
+        let serialized = serde_json::to_string(&envelope).unwrap();
+        let deserialized: Envelope = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(envelope, deserialized);
     }
 
     #[test]
@@ -570,7 +761,7 @@ mod tests {
 
         let envelope: Envelope = serde_json::from_str(json).unwrap();
 
-        match envelope {
+        match envelope.clone() {
             Envelope::AuthEvent { event } => {
                 assert_eq!(
                     event.id,
@@ -583,28 +774,31 @@ mod tests {
             }
             _ => panic!("expected AuthEvent envelope"),
         }
+
+        // test serialization round-trip
+        let serialized = serde_json::to_string(&envelope).unwrap();
+        let deserialized: Envelope = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(envelope, deserialized);
     }
 
     #[test]
-    fn test_decode_invalid_envelope() {
-        let json = r#"["UNKNOWN", "some", "data"]"#;
-        let result: std::result::Result<Envelope, _> = serde_json::from_str(json);
-        assert!(result.is_err());
-    }
+    fn test_decode_invalid_things() {
+        {
+            let json = r#"["UNKNOWN", "some", "data"]"#;
+            let result: std::result::Result<Envelope, _> = serde_json::from_str(json);
+            assert!(result.is_err());
+        }
 
-    #[test]
-    fn test_decode_empty_array() {
-        let json = r#"[]"#;
+        {
+            let json = r#"[]"#;
+            let result: std::result::Result<Envelope, _> = serde_json::from_str(json);
+            assert!(result.is_err());
+        }
 
-        let result: std::result::Result<Envelope, _> = serde_json::from_str(json);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_decode_req_no_filters() {
-        let json = r#"["REQ", "sub123"]"#;
-
-        let result: std::result::Result<Envelope, _> = serde_json::from_str(json);
-        assert!(result.is_err());
+        {
+            let json = r#"["REQ", "sub123"]"#;
+            let result: std::result::Result<Envelope, _> = serde_json::from_str(json);
+            assert!(result.is_err());
+        }
     }
 }

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// Nostr filter for querying events
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct Filter {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ids: Option<Vec<ID>>,
