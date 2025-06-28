@@ -1,5 +1,7 @@
-use crate::{Event, Filter, ID};
+use crate::{Event, Filter, Kind, ID};
+use serde::{de, de::SeqAccess, de::Visitor, Deserialize, Deserializer};
 use serde_json::Value;
+use std::fmt;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -25,302 +27,584 @@ pub type Result<T> = std::result::Result<T, EnvelopeError>;
 /// nostr message envelopes ("commands")
 #[derive(Debug, Clone)]
 pub enum Envelope {
-    InEvent(InEventEnvelope),
-    OutEvent(OutEventEnvelope),
-    Req(ReqEnvelope),
-    CountAsk(CountAskEnvelope),
-    CountReply(CountReplyEnvelope),
-    Notice(NoticeEnvelope),
-    Eose(EOSEEnvelope),
-    Close(CloseEnvelope),
-    Closed(ClosedEnvelope),
-    Ok(OKEnvelope),
-    AuthChallenge(AuthChallengeEnvelope),
-    AuthEvent(AuthEventEnvelope),
+    /// EVENT envelope (incoming from relay)
+    InEvent {
+        subscription_id: String,
+        event: Event,
+    },
+    /// EVENT envelope (outgoing to relay)
+    OutEvent { event: Event },
+    /// REQ envelope
+    Req {
+        subscription_id: String,
+        filters: Vec<Filter>,
+    },
+    /// COUNT envelope (ask)
+    CountAsk {
+        subscription_id: String,
+        filter: Filter,
+    },
+    /// COUNT envelope (reply)
+    CountReply {
+        subscription_id: String,
+        count: u32,
+        hyperloglog: Option<Vec<u8>>,
+    },
+    /// NOTICE envelope
+    Notice(String),
+    /// EOSE envelope
+    Eose { subscription_id: String },
+    /// CLOSE envelope
+    Close { subscription_id: String },
+    /// CLOSED envelope
+    Closed {
+        subscription_id: String,
+        reason: String,
+    },
+    /// OK envelope
+    Ok {
+        event_id: ID,
+        ok: bool,
+        reason: String,
+    },
+    /// AUTH envelope (challenge)
+    AuthChallenge { challenge: String },
+    /// AUTH envelope (event)
+    AuthEvent { event: Event },
+}
+
+impl<'de> Deserialize<'de> for Envelope {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct MsgVisitor;
+
+        impl<'de> Visitor<'de> for MsgVisitor {
+            type Value = Envelope;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a Nostr client message array")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Envelope, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let msg_type: String = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+
+                match msg_type.as_str() {
+                    "EVENT" => {
+                        // check if this is a 2-element or 3-element array
+                        let second_element: Value = seq
+                            .next_element()?
+                            .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+
+                        if let Ok(Some(third_element)) = seq.next_element::<Value>() {
+                            // 3-element array: ["EVENT", subscription_id, event]
+                            let subscription_id = second_element
+                                .as_str()
+                                .ok_or_else(|| de::Error::custom("invalid subscription_id"))?
+                                .to_string();
+                            let event: Event =
+                                serde_json::from_value(third_element).map_err(de::Error::custom)?;
+                            Ok(Envelope::InEvent {
+                                subscription_id,
+                                event,
+                            })
+                        } else {
+                            // 2-element array: ["EVENT", event]
+                            let event: Event = serde_json::from_value(second_element)
+                                .map_err(de::Error::custom)?;
+                            Ok(Envelope::OutEvent { event })
+                        }
+                    }
+                    "REQ" => {
+                        let subscription_id: String = seq
+                            .next_element()?
+                            .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+
+                        let mut filters = Vec::new();
+                        while let Some(filter_value) = seq.next_element::<Value>()? {
+                            let filter: Filter =
+                                serde_json::from_value(filter_value).map_err(de::Error::custom)?;
+                            filters.push(filter);
+                        }
+
+                        if filters.is_empty() {
+                            return Err(de::Error::custom("REQ must have at least one filter"));
+                        }
+
+                        Ok(Envelope::Req {
+                            subscription_id,
+                            filters,
+                        })
+                    }
+                    "COUNT" => {
+                        let subscription_id: String = seq
+                            .next_element()?
+                            .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+
+                        let third_element: Value = seq
+                            .next_element()?
+                            .ok_or_else(|| de::Error::invalid_length(2, &self))?;
+
+                        match serde_json::from_value::<serde_json::Map<String, Value>>(
+                            third_element.clone(),
+                        ) {
+                            Ok(count_result) if count_result.get("count").is_some() => {
+                                // COUNT reply
+                                let mut count = 0;
+                                let mut hyperloglog = None;
+
+                                if let Some(count_val) = count_result.get("count") {
+                                    count = count_val
+                                        .as_i64()
+                                        .ok_or_else(|| de::Error::custom("invalid count value"))?
+                                        as u32;
+                                }
+                                if let Some(hll) = count_result.get("hll") {
+                                    if let Some(hll_str) = hll.as_str() {
+                                        if hll_str.len() != 512 {
+                                            return Err(de::Error::custom("invalid hll length"));
+                                        }
+                                        hyperloglog = lowercase_hex::decode(hll_str).ok();
+                                    }
+                                }
+
+                                Ok(Envelope::CountReply {
+                                    subscription_id,
+                                    count,
+                                    hyperloglog,
+                                })
+                            }
+                            _ => {
+                                if let Ok(filter) =
+                                    serde_json::from_value::<Filter>(third_element.clone())
+                                {
+                                    // COUNT ask
+                                    Ok(Envelope::CountAsk {
+                                        subscription_id,
+                                        filter,
+                                    })
+                                } else {
+                                    return Err(de::Error::custom("invalid count"));
+                                }
+                            }
+                        }
+                    }
+                    "OK" => {
+                        let event_id_str: String = seq
+                            .next_element()?
+                            .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                        let event_id = ID::from_hex(&event_id_str).map_err(de::Error::custom)?;
+                        let ok: bool = seq
+                            .next_element()?
+                            .ok_or_else(|| de::Error::invalid_length(2, &self))?;
+                        let reason: String = seq
+                            .next_element()?
+                            .or_else(|| if ok { Some("".to_string()) } else { None })
+                            .ok_or_else(|| de::Error::invalid_length(2, &self))?;
+                        Ok(Envelope::Ok {
+                            event_id,
+                            ok,
+                            reason,
+                        })
+                    }
+                    "NOTICE" => {
+                        let reason: String = seq
+                            .next_element()?
+                            .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                        Ok(Envelope::Notice(reason))
+                    }
+                    "EOSE" => {
+                        let subscription_id: String = seq
+                            .next_element()?
+                            .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                        Ok(Envelope::Eose { subscription_id })
+                    }
+                    "CLOSE" => {
+                        let subscription_id: String = seq
+                            .next_element()?
+                            .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                        Ok(Envelope::Close { subscription_id })
+                    }
+                    "CLOSED" => {
+                        let subscription_id: String = seq
+                            .next_element()?
+                            .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                        let reason: String = seq
+                            .next_element()?
+                            .ok_or_else(|| de::Error::invalid_length(2, &self))?;
+                        Ok(Envelope::Closed {
+                            subscription_id,
+                            reason,
+                        })
+                    }
+                    "AUTH" => {
+                        let second_element: Value = seq
+                            .next_element()?
+                            .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+
+                        if second_element.is_object() {
+                            let event: Event = serde_json::from_value(second_element)
+                                .map_err(de::Error::custom)?;
+                            if event.kind == Kind(22242) {
+                                Ok(Envelope::AuthEvent { event })
+                            } else {
+                                Err(de::Error::custom("invalid auth event kind"))
+                            }
+                        } else {
+                            let challenge = second_element
+                                .as_str()
+                                .ok_or_else(|| de::Error::custom("invalid challenge"))?
+                                .to_string();
+                            Ok(Envelope::AuthChallenge { challenge })
+                        }
+                    }
+                    other => Err(de::Error::unknown_variant(
+                        other,
+                        &[
+                            "EVENT", "REQ", "COUNT", "OK", "NOTICE", "EOSE", "CLOSE", "CLOSED",
+                            "AUTH",
+                        ],
+                    )),
+                }
+            }
+        }
+
+        deserializer.deserialize_seq(MsgVisitor)
+    }
 }
 
 impl Envelope {
     /// get the label for this envelope type
     pub fn label(&self) -> &'static str {
         match self {
-            Envelope::InEvent(_) => "EVENT",
-            Envelope::OutEvent(_) => "EVENT",
-            Envelope::Req(_) => "REQ",
-            Envelope::CountAsk(_) => "COUNT",
-            Envelope::CountReply(_) => "COUNT",
+            Envelope::InEvent { .. } => "EVENT",
+            Envelope::OutEvent { .. } => "EVENT",
+            Envelope::Req { .. } => "REQ",
+            Envelope::CountAsk { .. } => "COUNT",
+            Envelope::CountReply { .. } => "COUNT",
             Envelope::Notice(_) => "NOTICE",
-            Envelope::Eose(_) => "EOSE",
-            Envelope::Close(_) => "CLOSE",
-            Envelope::Closed(_) => "CLOSED",
-            Envelope::Ok(_) => "OK",
-            Envelope::AuthChallenge(_) => "AUTH",
-            Envelope::AuthEvent(_) => "AUTH",
+            Envelope::Eose { .. } => "EOSE",
+            Envelope::Close { .. } => "CLOSE",
+            Envelope::Closed { .. } => "CLOSED",
+            Envelope::Ok { .. } => "OK",
+            Envelope::AuthChallenge { .. } => "AUTH",
+            Envelope::AuthEvent { .. } => "AUTH",
         }
     }
 }
 
-/// EVENT envelope (incoming from relay)
-#[derive(Debug, Clone)]
-pub struct InEventEnvelope {
-    pub subscription_id: String,
-    pub event: Event,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Kind, PubKey, ID};
 
-/// EVENT envelope (outgoing to relay)
-#[derive(Debug, Clone)]
-pub struct OutEventEnvelope {
-    pub event: Event,
-}
+    #[test]
+    fn test_decode_in_event() {
+        let json = r#"["EVENT", "sub123", {"id":"9429b2e11640bfd86971f0d9f7435199b57e121a363213df11d5b426807e49f5","pubkey":"37a4aef1f8423ca076e4b7d99a8cabff40ddb8231f2a9f01081f15d7fa65c1ba","created_at":1750711742,"kind":1,"tags":[],"content":"hello world","sig":"a1ecbf1636f5e752f1b918a86b065a8031b1387f0785f0ca19b84cc155d7937fece1f3ae53b79d347fbce5555a0f2da8db96334cab154f8d92300f8c1936710c"}]"#;
 
-/// REQ envelope
-#[derive(Debug, Clone)]
-pub struct ReqEnvelope {
-    pub subscription_id: String,
-    pub filters: Vec<Filter>,
-}
+        let envelope: Envelope = serde_json::from_str(json).unwrap();
 
-/// COUNT envelope
-#[derive(Debug, Clone)]
-pub struct CountAskEnvelope {
-    pub subscription_id: String,
-    pub filter: Filter,
-}
-
-/// COUNT envelope
-#[derive(Debug, Clone)]
-pub struct CountReplyEnvelope {
-    pub subscription_id: String,
-    pub count: u32,
-    pub hyperloglog: Option<Vec<u8>>,
-}
-
-/// NOTICE envelope
-#[derive(Debug, Clone)]
-pub struct NoticeEnvelope(pub String);
-
-/// EOSE envelope
-#[derive(Debug, Clone)]
-pub struct EOSEEnvelope {
-    pub subscription_id: String,
-}
-
-/// CLOSE envelope
-#[derive(Debug, Clone)]
-pub struct CloseEnvelope {
-    pub subscription_id: String,
-}
-
-/// CLOSED envelope
-#[derive(Debug, Clone)]
-pub struct ClosedEnvelope {
-    pub subscription_id: String,
-    pub reason: String,
-}
-
-/// OK envelope
-#[derive(Debug, Clone)]
-pub struct OKEnvelope {
-    pub event_id: ID,
-    pub ok: bool,
-    pub reason: String,
-}
-
-/// AUTH envelope
-#[derive(Debug, Clone)]
-pub struct AuthEventEnvelope {
-    pub event: Event,
-}
-
-#[derive(Debug, Clone)]
-pub struct AuthChallengeEnvelope {
-    pub challenge: String,
-}
-
-/// parse a message into an envelope
-pub fn parse_message(message: &str) -> Result<Envelope> {
-    let mut arr: Vec<Value> = serde_json::from_str(message)?;
-    if arr.is_empty() {
-        return Err(EnvelopeError::EmptyMessage);
+        match envelope {
+            Envelope::InEvent {
+                subscription_id,
+                event,
+            } => {
+                assert_eq!(subscription_id, "sub123");
+                assert_eq!(
+                    event.id,
+                    ID::from_hex(
+                        "9429b2e11640bfd86971f0d9f7435199b57e121a363213df11d5b426807e49f5"
+                    )
+                    .unwrap()
+                );
+                assert_eq!(event.content, "hello world");
+                assert_eq!(event.kind, Kind(1));
+            }
+            _ => panic!("expected InEvent envelope"),
+        }
     }
 
-    let label = arr[0].as_str().ok_or(EnvelopeError::InvalidLabel)?;
+    #[test]
+    fn test_decode_out_event() {
+        let json = r#"["EVENT", {"id":"9429b2e11640bfd86971f0d9f7435199b57e121a363213df11d5b426807e49f5","pubkey":"37a4aef1f8423ca076e4b7d99a8cabff40ddb8231f2a9f01081f15d7fa65c1ba","created_at":1750711742,"kind":1,"tags":[],"content":"hello world","sig":"a1ecbf1636f5e752f1b918a86b065a8031b1387f0785f0ca19b84cc155d7937fece1f3ae53b79d347fbce5555a0f2da8db96334cab154f8d92300f8c1936710c"}]"#;
 
-    match label {
-        "EVENT" => {
-            let envelope = match arr.len() {
-                2 => Envelope::OutEvent(OutEventEnvelope {
-                    event: serde_json::from_value(arr[1].clone())?,
-                }),
-                3 => Envelope::InEvent(InEventEnvelope {
-                    subscription_id: arr[1]
-                        .as_str()
-                        .ok_or(EnvelopeError::InvalidEnvelope("EVENT".to_string()))?
-                        .to_string(),
-                    event: serde_json::from_value(arr[2].clone())?,
-                }),
-                _ => return Err(EnvelopeError::InvalidEnvelope("EVENT".to_string())),
-            };
-            Ok(envelope)
+        let envelope: Envelope = serde_json::from_str(json).unwrap();
+
+        match envelope {
+            Envelope::OutEvent { event } => {
+                assert_eq!(
+                    event.id,
+                    ID::from_hex(
+                        "9429b2e11640bfd86971f0d9f7435199b57e121a363213df11d5b426807e49f5"
+                    )
+                    .unwrap()
+                );
+                assert_eq!(event.content, "hello world");
+                assert_eq!(event.kind, Kind(1));
+            }
+            _ => panic!("expected OutEvent envelope"),
         }
-        "REQ" => {
-            if arr.len() < 3 {
-                return Err(EnvelopeError::InvalidEnvelope("REQ".to_string()));
-            }
+    }
 
-            let subscription_id = arr[1]
-                .as_str()
-                .ok_or(EnvelopeError::InvalidEnvelope("REQ".to_string()))?
-                .to_string();
+    #[test]
+    fn test_decode_req() {
+        let json = r#"["REQ", "sub456", {"kinds":[1,2],"limit":10}, {"authors":["37a4aef1f8423ca076e4b7d99a8cabff40ddb8231f2a9f01081f15d7fa65c1ba"]}]"#;
 
-            let mut filters = Vec::with_capacity(arr.len() - 2);
-            for x in 2..arr.len() {
-                let extraf: Filter = serde_json::from_value(arr[x].clone())?;
-                filters.push(extraf);
-            }
-            let envelope = ReqEnvelope {
+        let envelope: Envelope = serde_json::from_str(json).unwrap();
+
+        match envelope {
+            Envelope::Req {
                 subscription_id,
                 filters,
-            };
-            Ok(Envelope::Req(envelope))
-        }
-        "COUNT" => {
-            if arr.len() < 3 {
-                return Err(EnvelopeError::InvalidEnvelope("COUNT".to_string()));
+            } => {
+                assert_eq!(subscription_id, "sub456");
+                assert_eq!(filters.len(), 2);
+                assert_eq!(filters[0].kinds, Some(vec![Kind(1), Kind(2)]));
+                assert_eq!(filters[0].limit, Some(10));
+                assert_eq!(
+                    filters[1].authors,
+                    Some(vec![PubKey::from_hex(
+                        "37a4aef1f8423ca076e4b7d99a8cabff40ddb8231f2a9f01081f15d7fa65c1ba"
+                    )
+                    .unwrap()])
+                );
             }
-            let subscription_id = arr[1]
-                .as_str()
-                .ok_or(EnvelopeError::InvalidEnvelope("COUNT".to_string()))?
-                .to_string();
+            _ => panic!("expected Req envelope"),
+        }
+    }
 
-            let envelope: Envelope;
+    #[test]
+    fn test_decode_count_ask() {
+        let json = r#"["COUNT", "sub789", {"kinds":[1]}]"#;
 
-            if let Ok(count_result) =
-                serde_json::from_value::<serde_json::Map<String, Value>>(arr[2].take())
-            {
-                let mut countre = CountReplyEnvelope {
-                    subscription_id,
-                    count: 0,
-                    hyperloglog: None,
-                };
+        let envelope: Envelope = serde_json::from_str(json).unwrap();
+        match envelope {
+            Envelope::CountAsk {
+                subscription_id,
+                filter,
+            } => {
+                assert_eq!(subscription_id, "sub789");
+                assert_eq!(filter.kinds, Some(vec![Kind(1)]));
+            }
+            got => panic!("expected CountAsk envelope, got {:?}", got),
+        }
+    }
 
-                if let Some(count) = count_result.get("count") {
-                    countre.count = count
-                        .as_i64()
-                        .ok_or(EnvelopeError::InvalidEnvelope("COUNT".to_string()))?
-                        as u32;
-                }
-                if let Some(hll) = count_result.get("hll") {
-                    if let Some(hll_str) = hll.as_str() {
-                        if hll_str.len() != 512 {
-                            return Err(EnvelopeError::InvalidEnvelope("COUNT".to_string()));
-                        }
-                        let hll = lowercase_hex::decode(hll_str).ok();
-                        countre.hyperloglog = hll;
-                    }
-                }
+    #[test]
+    fn test_decode_count_reply() {
+        let json = r#"["COUNT", "sub789", {"count":42}]"#;
 
-                envelope = Envelope::CountReply(countre);
-            } else {
-                // parse as filter
-                envelope = Envelope::CountAsk(CountAskEnvelope {
-                    subscription_id,
-                    filter: serde_json::from_value(arr[2].clone())?,
-                });
-            }
+        let envelope: Envelope = serde_json::from_str(json).unwrap();
 
-            Ok(envelope)
-        }
-        "NOTICE" => {
-            if arr.len() < 2 {
-                return Err(EnvelopeError::InvalidEnvelope("NOTICE".to_string()));
+        match envelope {
+            Envelope::CountReply {
+                subscription_id,
+                count,
+                hyperloglog,
+            } => {
+                assert_eq!(subscription_id, "sub789");
+                assert_eq!(count, 42);
+                assert_eq!(hyperloglog, None);
             }
-            let envelope = NoticeEnvelope(
-                arr[1]
-                    .as_str()
-                    .ok_or(EnvelopeError::InvalidEnvelope("NOTICE".to_string()))?
-                    .to_string(),
-            );
-            Ok(Envelope::Notice(envelope))
+            _ => panic!("expected CountReply envelope"),
         }
-        "EOSE" => {
-            if arr.len() < 2 {
-                return Err(EnvelopeError::InvalidEnvelope("EOSE".to_string()));
-            }
-            let envelope = EOSEEnvelope {
-                subscription_id: arr[1]
-                    .as_str()
-                    .ok_or(EnvelopeError::InvalidEnvelope("EOSE".to_string()))?
-                    .to_string(),
-            };
-            Ok(Envelope::Eose(envelope))
-        }
-        "CLOSE" => {
-            if arr.len() < 2 {
-                return Err(EnvelopeError::InvalidEnvelope("CLOSE".to_string()));
-            }
-            let envelope = CloseEnvelope {
-                subscription_id: arr[1]
-                    .as_str()
-                    .ok_or(EnvelopeError::InvalidEnvelope("CLOSE".to_string()))?
-                    .to_string(),
-            };
-            Ok(Envelope::Close(envelope))
-        }
-        "CLOSED" => {
-            if arr.len() < 3 {
-                return Err(EnvelopeError::InvalidEnvelope("CLOSED".to_string()));
-            }
-            let envelope = ClosedEnvelope {
-                subscription_id: arr[1]
-                    .as_str()
-                    .ok_or(EnvelopeError::InvalidEnvelope("CLOSED".to_string()))?
-                    .to_string(),
-                reason: arr[2]
-                    .as_str()
-                    .ok_or(EnvelopeError::InvalidEnvelope("CLOSED".to_string()))?
-                    .to_string(),
-            };
-            Ok(Envelope::Closed(envelope))
-        }
-        "OK" => {
-            if arr.len() < 4 {
-                return Err(EnvelopeError::InvalidEnvelope("OK".to_string()));
-            }
-            let envelope = OKEnvelope {
-                event_id: ID::from_hex(
-                    arr[1]
-                        .as_str()
-                        .ok_or(EnvelopeError::InvalidEnvelope("OK".to_string()))?,
-                )?,
-                ok: arr[2]
-                    .as_bool()
-                    .ok_or(EnvelopeError::InvalidEnvelope("OK".to_string()))?,
-                reason: arr[3]
-                    .as_str()
-                    .ok_or(EnvelopeError::InvalidEnvelope("OK".to_string()))?
-                    .to_string(),
-            };
-            Ok(Envelope::Ok(envelope))
-        }
-        "AUTH" => {
-            if arr.len() < 2 {
-                return Err(EnvelopeError::InvalidEnvelope("AUTH".to_string()));
-            }
+    }
 
-            let envelope = if arr[1].is_object() {
-                Envelope::AuthEvent(AuthEventEnvelope {
-                    event: serde_json::from_value(arr[1].clone())?,
-                })
-            } else {
-                Envelope::AuthChallenge(AuthChallengeEnvelope {
-                    challenge: arr[1]
-                        .as_str()
-                        .ok_or(EnvelopeError::InvalidEnvelope("AUTH".to_string()))?
-                        .to_string(),
-                })
-            };
-            Ok(envelope)
+    #[test]
+    fn test_decode_count_reply_with_hll() {
+        let hll_str = "0".repeat(512); // 512 character hex string
+        let json = format!(r#"["COUNT", "sub789", {{"count":42,"hll":"{}"}}]"#, hll_str);
+
+        let envelope: Envelope = serde_json::from_str(&json).unwrap();
+
+        match envelope {
+            Envelope::CountReply {
+                subscription_id,
+                count,
+                hyperloglog,
+            } => {
+                assert_eq!(subscription_id, "sub789");
+                assert_eq!(count, 42);
+                assert!(hyperloglog.is_some());
+                assert_eq!(hyperloglog.unwrap().len(), 256); // 512 hex chars = 256 bytes
+            }
+            _ => panic!("expected CountReply envelope"),
         }
-        _ => Err(EnvelopeError::UnknownLabel(label.to_string())),
+    }
+
+    #[test]
+    fn test_decode_notice() {
+        let json = r#"["NOTICE", "this is a notice message"]"#;
+
+        let envelope: Envelope = serde_json::from_str(json).unwrap();
+
+        match envelope {
+            Envelope::Notice(message) => {
+                assert_eq!(message, "this is a notice message");
+            }
+            _ => panic!("expected Notice envelope"),
+        }
+    }
+
+    #[test]
+    fn test_decode_eose() {
+        let json = r#"["EOSE", "sub123"]"#;
+
+        let envelope: Envelope = serde_json::from_str(json).unwrap();
+
+        match envelope {
+            Envelope::Eose { subscription_id } => {
+                assert_eq!(subscription_id, "sub123");
+            }
+            _ => panic!("expected Eose envelope"),
+        }
+    }
+
+    #[test]
+    fn test_decode_close() {
+        let json = r#"["CLOSE", "sub123"]"#;
+
+        let envelope: Envelope = serde_json::from_str(json).unwrap();
+
+        match envelope {
+            Envelope::Close { subscription_id } => {
+                assert_eq!(subscription_id, "sub123");
+            }
+            _ => panic!("expected Close envelope"),
+        }
+    }
+
+    #[test]
+    fn test_decode_closed() {
+        let json = r#"["CLOSED", "sub123", "auth-required: please authenticate"]"#;
+
+        let envelope: Envelope = serde_json::from_str(json).unwrap();
+
+        match envelope {
+            Envelope::Closed {
+                subscription_id,
+                reason,
+            } => {
+                assert_eq!(subscription_id, "sub123");
+                assert_eq!(reason, "auth-required: please authenticate");
+            }
+            _ => panic!("expected Closed envelope"),
+        }
+    }
+
+    #[test]
+    fn test_decode_ok() {
+        let json = r#"["OK", "9429b2e11640bfd86971f0d9f7435199b57e121a363213df11d5b426807e49f5", true, ""]"#;
+
+        let envelope: Envelope = serde_json::from_str(json).unwrap();
+
+        match envelope {
+            Envelope::Ok {
+                event_id,
+                ok,
+                reason,
+            } => {
+                assert_eq!(
+                    event_id,
+                    ID::from_hex(
+                        "9429b2e11640bfd86971f0d9f7435199b57e121a363213df11d5b426807e49f5"
+                    )
+                    .unwrap()
+                );
+                assert_eq!(ok, true);
+                assert_eq!(reason, "");
+            }
+            _ => panic!("expected Ok envelope"),
+        }
+    }
+
+    #[test]
+    fn test_decode_ok_false() {
+        let json = r#"["OK", "9429b2e11640bfd86971f0d9f7435199b57e121a363213df11d5b426807e49f5", false, "invalid: signature verification failed"]"#;
+
+        let envelope: Envelope = serde_json::from_str(json).unwrap();
+
+        match envelope {
+            Envelope::Ok {
+                event_id,
+                ok,
+                reason,
+            } => {
+                assert_eq!(
+                    event_id,
+                    ID::from_hex(
+                        "9429b2e11640bfd86971f0d9f7435199b57e121a363213df11d5b426807e49f5"
+                    )
+                    .unwrap()
+                );
+                assert_eq!(ok, false);
+                assert_eq!(reason, "invalid: signature verification failed");
+            }
+            _ => panic!("expected Ok envelope"),
+        }
+    }
+
+    #[test]
+    fn test_decode_auth_challenge() {
+        let json = r#"["AUTH", "challenge-string-here"]"#;
+
+        let envelope: Envelope = serde_json::from_str(json).unwrap();
+
+        match envelope {
+            Envelope::AuthChallenge { challenge } => {
+                assert_eq!(challenge, "challenge-string-here");
+            }
+            _ => panic!("expected AuthChallenge envelope"),
+        }
+    }
+
+    #[test]
+    fn test_decode_auth_event() {
+        let json = r#"["AUTH", {"id":"9429b2e11640bfd86971f0d9f7435199b57e121a363213df11d5b426807e49f5","pubkey":"37a4aef1f8423ca076e4b7d99a8cabff40ddb8231f2a9f01081f15d7fa65c1ba","created_at":1750711742,"kind":22242,"tags":[],"content":"","sig":"a1ecbf1636f5e752f1b918a86b065a8031b1387f0785f0ca19b84cc155d7937fece1f3ae53b79d347fbce5555a0f2da8db96334cab154f8d92300f8c1936710c"}]"#;
+
+        let envelope: Envelope = serde_json::from_str(json).unwrap();
+
+        match envelope {
+            Envelope::AuthEvent { event } => {
+                assert_eq!(
+                    event.id,
+                    ID::from_hex(
+                        "9429b2e11640bfd86971f0d9f7435199b57e121a363213df11d5b426807e49f5"
+                    )
+                    .unwrap()
+                );
+                assert_eq!(event.kind, Kind(22242));
+            }
+            _ => panic!("expected AuthEvent envelope"),
+        }
+    }
+
+    #[test]
+    fn test_decode_invalid_envelope() {
+        let json = r#"["UNKNOWN", "some", "data"]"#;
+        let result: std::result::Result<Envelope, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_empty_array() {
+        let json = r#"[]"#;
+
+        let result: std::result::Result<Envelope, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_req_no_filters() {
+        let json = r#"["REQ", "sub123"]"#;
+
+        let result: std::result::Result<Envelope, _> = serde_json::from_str(json);
+        assert!(result.is_err());
     }
 }

@@ -4,7 +4,7 @@
 //! using hyper for HTTP and WebSocket handling.
 
 use crate::{
-    envelopes::{parse_message, EOSEEnvelope, Envelope, NoticeEnvelope, OKEnvelope, ReqEnvelope},
+    envelopes::Envelope,
     nip11::RelayInformationDocument,
     normalize_ok_message, Event, Filter,
 };
@@ -80,51 +80,44 @@ pub async fn start(ri: Arc<RelayInternals>, addr: SocketAddr) -> Result<()> {
                                             while let Some(Ok(msg)) = rx.next().await {
                                                 match msg {
                                                     Message::Text(msg_text) => {
-                                                        match parse_message(msg_text.as_str()) {
-                                                            Ok(Envelope::Req(req_env)) => {
+                                                        match serde_json::from_str::<Envelope>(msg_text.as_str()) {
+                                                            Ok(Envelope::Req { subscription_id, filters }) => {
                                                                 handle_req_envelope(
                                                                     &ri,
                                                                     tx.clone(),
-                                                                    req_env,
+                                                                    subscription_id,
+                                                                    filters,
                                                                 )
                                                                 .await;
                                                             }
-                                                            // Ok(Envelope::CountAsk(count_env)) => {
+                                                            // Ok(Envelope::CountAsk { subscription_id, filter }) => {
                                                             //     handle_count_ask(
-                                                            //         &ri, tx, count_env,
+                                                            //         &ri, tx, subscription_id, filter,
                                                             //     )
                                                             //     .await;
                                                             // }
-                                                            Ok(Envelope::OutEvent(event_env)) => {
+                                                            Ok(Envelope::OutEvent { event }) => {
                                                                 handle_event_envelope(
                                                                     &ri,
                                                                     tx.clone(),
-                                                                    &event_env.event,
+                                                                    &event,
                                                                 )
                                                                 .await;
                                                             }
                                                             Ok(envelope) => {
+                                                                let notice = serde_json::json!(["NOTICE", format!("we don't know how to handle this {}", envelope.label())]);
                                                                 let _ = tx
                                                                     .lock()
                                                                     .await
-                                                                    .send(Message::text(
-                                                                        serde_json::to_string(
-                                                                            &NoticeEnvelope(format!("we don't know how to handle this {}", envelope.label())),
-                                                                        )
-                                                                        .unwrap_or_default(),
-                                                                    ))
+                                                                    .send(Message::text(notice.to_string()))
                                                                     .await;
                                                             }
                                                             Err(err) => {
+                                                                let notice = serde_json::json!(["NOTICE", format!("failed to parse message: {}", err)]);
                                                                 let _ = tx
                                                                     .lock()
                                                                     .await
-                                                                    .send(Message::text(
-                                                                        serde_json::to_string(
-                                                                            &NoticeEnvelope(format!("failed to parse message: {}", err)),
-                                                                        )
-                                                                        .unwrap_or_default(),
-                                                                    ))
+                                                                    .send(Message::text(notice.to_string()))
                                                                     .await;
                                                             }
                                                         }
@@ -207,14 +200,15 @@ pub async fn start(ri: Arc<RelayInternals>, addr: SocketAddr) -> Result<()> {
 async fn handle_req_envelope(
     ri: &Arc<RelayInternals>,
     tx: Arc<Mutex<SplitSink<WebSocketStream<TokioIo<Upgraded>>, Message>>>,
-    req_env: ReqEnvelope,
+    subscription_id: String,
+    filters: Vec<Filter>,
 ) {
-    for filter in req_env.filters {
+    for filter in filters {
         // query events
         match ri.custom_relay.lock().await.handle_request(&filter) {
             Ok(events) => {
                 for event in events {
-                    let event_env = serde_json::json!(["EVENT", req_env.subscription_id, event]);
+                    let event_env = serde_json::json!(["EVENT", subscription_id, event]);
                     let _ = tx
                         .lock()
                         .await
@@ -223,23 +217,18 @@ async fn handle_req_envelope(
                 }
             }
             Err(e) => {
-                let notice = NoticeEnvelope(format!("query error: {}", e));
+                let notice = serde_json::json!(["NOTICE", format!("query error: {}", e)]);
                 let _ = tx
                     .lock()
                     .await
-                    .send(Message::text(
-                        serde_json::to_string(&notice).unwrap_or_default(),
-                    ))
+                    .send(Message::text(notice.to_string()))
                     .await;
             }
         }
     }
 
     // send EOSE
-    let eose = EOSEEnvelope {
-        subscription_id: req_env.subscription_id,
-    };
-    let eose_json = serde_json::json!(["EOSE", eose.subscription_id]);
+    let eose_json = serde_json::json!(["EOSE", subscription_id]);
     let _ = tx
         .lock()
         .await
@@ -254,12 +243,7 @@ async fn handle_event_envelope(
 ) {
     // check event ID
     if !event.check_id() {
-        let ok = OKEnvelope {
-            event_id: event.id,
-            ok: false,
-            reason: "invalid: id is computed incorrectly".to_string(),
-        };
-        let ok_json = serde_json::json!(["OK", ok.event_id, ok.ok, ok.reason]);
+        let ok_json = serde_json::json!(["OK", event.id, false, "invalid: id is computed incorrectly"]);
         let _ = tx
             .lock()
             .await
@@ -270,12 +254,7 @@ async fn handle_event_envelope(
 
     // check signature
     if !event.verify_signature() {
-        let ok = OKEnvelope {
-            event_id: event.id,
-            ok: false,
-            reason: "invalid: signature is invalid".to_string(),
-        };
-        let ok_json = serde_json::json!(["OK", ok.event_id, ok.ok, ok.reason]);
+        let ok_json = serde_json::json!(["OK", event.id, false, "invalid: signature is invalid"]);
         let _ = tx
             .lock()
             .await
@@ -287,12 +266,7 @@ async fn handle_event_envelope(
     // possibly save event
     match ri.custom_relay.lock().await.handle_event(&event) {
         Ok(()) => {
-            let ok = OKEnvelope {
-                event_id: event.id,
-                ok: true,
-                reason: "".to_string(),
-            };
-            let ok_json = serde_json::json!(["OK", ok.event_id, ok.ok, ok.reason]);
+            let ok_json = serde_json::json!(["OK", event.id, true, ""]);
             let _ = tx
                 .lock()
                 .await
@@ -300,12 +274,7 @@ async fn handle_event_envelope(
                 .await;
         }
         Err(e) => {
-            let ok = OKEnvelope {
-                event_id: event.id,
-                ok: false,
-                reason: normalize_ok_message(&e, "error"),
-            };
-            let ok_json = serde_json::json!(["OK", ok.event_id, ok.ok, ok.reason]);
+            let ok_json = serde_json::json!(["OK", event.id, false, normalize_ok_message(&e, "error")]);
             let _ = tx
                 .lock()
                 .await

@@ -102,7 +102,7 @@ impl Relay {
         let pong_writer = relay.conn_write.clone();
         let id_skippers_map = relay.id_skippers_map.clone();
         let occurrences_sender_map = relay.occurrences_sender_map.clone();
-        let challenge = relay.challenge.clone();
+        let relay_challenge = relay.challenge.clone();
         let ok_callbacks = relay.ok_callbacks.clone();
         tokio::spawn(async move {
             let mut buf = Vec::with_capacity(500);
@@ -172,22 +172,25 @@ impl Relay {
                 }
 
                 // parse the message
-                match parse_message(&message) {
-                    Ok(Envelope::InEvent(event)) => {
+                match serde_json::from_str::<Envelope>(&message) {
+                    Ok(Envelope::InEvent {
+                        subscription_id,
+                        event,
+                    }) => {
                         if let Some((occ, filter)) = occurrences_sender_map
                             .lock()
                             .await
-                            .get(key_from_sub_id(event.subscription_id.as_str()))
+                            .get(key_from_sub_id(subscription_id.as_str()))
                         {
-                            if filter.matches(&event.event) && event.event.verify_signature() {
-                                let _ = occ.send(Occurrence::Event(event.event)).await;
+                            if filter.matches(&event) && event.verify_signature() {
+                                let _ = occ.send(Occurrence::Event(event)).await;
                             } else {
                                 // TODO: penalize this relay?
                             }
                         };
                     }
-                    Ok(Envelope::Eose(eose)) => {
-                        let key = key_from_sub_id(eose.subscription_id.as_str());
+                    Ok(Envelope::Eose { subscription_id }) => {
+                        let key = key_from_sub_id(subscription_id.as_str());
                         let mut map = occurrences_sender_map.lock().await;
                         if let Some(occfilter) = map.get_mut(key) {
                             // since we got an EOSE our internal filter won't check for since/until anymore
@@ -198,38 +201,45 @@ impl Relay {
                             let _ = occfilter.0.send(Occurrence::EOSE).await;
                         };
                     }
-                    Ok(Envelope::Ok(ok)) => match ok_callbacks.remove(&ok.event_id) {
+                    Ok(Envelope::Ok {
+                        event_id,
+                        ok,
+                        reason,
+                    }) => match ok_callbacks.remove(&event_id) {
                         Some((_, sender)) => {
-                            let _ = sender.send(match ok.ok {
+                            let _ = sender.send(match ok {
                                 true => Ok(()),
-                                false => Err(RelayError::OKFalseWithReason(ok.reason)),
+                                false => Err(RelayError::OKFalseWithReason(reason)),
                             });
                         }
                         None => {
                             println!(
                                 "received OK for unknown event {}: {} - {}",
-                                ok.event_id, ok.ok, ok.reason
+                                event_id, ok, reason
                             );
                         }
                     },
                     Ok(Envelope::Notice(notice)) => {
-                        println!("[{}] received notice: {}", url.as_str(), notice.0);
+                        println!("[{}] received notice: {}", url.as_str(), notice);
                     }
-                    Ok(Envelope::Closed(closed)) => {
+                    Ok(Envelope::Closed {
+                        subscription_id,
+                        reason,
+                    }) => {
                         if let Some((occ, _)) = occurrences_sender_map
                             .lock()
                             .await
-                            .remove(key_from_sub_id(&closed.subscription_id))
+                            .remove(key_from_sub_id(&subscription_id))
                         {
                             let _ = occ
                                 .send(Occurrence::Close(CloseReason::ClosedByThemWithReason(
-                                    closed.reason,
+                                    reason,
                                 )))
                                 .await;
                         }
                     }
-                    Ok(Envelope::AuthChallenge(authc)) => {
-                        let _ = challenge.write().await.insert(authc.challenge);
+                    Ok(Envelope::AuthChallenge { challenge }) => {
+                        let _ = relay_challenge.write().await.insert(challenge);
                     }
                     Ok(envelope) => {
                         println!(
@@ -252,11 +262,10 @@ impl Relay {
         let (tx, rx) = oneshot::channel();
         self.ok_callbacks.insert(event.id.clone(), tx);
 
-        let envelope = OutEventEnvelope { event };
-        let msg = serde_json::to_string(&envelope)?;
+        let msg = serde_json::json!(["EVENT", event]);
 
         self.write_queue
-            .send(msg)
+            .send(msg.to_string())
             .map_err(|err| RelayError::PublishSendError(self.url.clone(), err.0))
             .await?;
 
