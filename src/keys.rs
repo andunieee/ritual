@@ -64,7 +64,7 @@ impl SecretKey {
 
     /// get the public key for this secret key
     pub fn public_key(&self) -> PubKey {
-        let secret_key = Secp256k1SecretKey::from_slice(&self.0).expect("valid secret key");
+        let secret_key = Secp256k1SecretKey::from_byte_array(self.0).expect("valid secret key");
         let keypair = Keypair::from_secret_key(SECP256K1, &secret_key);
         let (xonly_pk, _) = XOnlyPublicKey::from_keypair(&keypair);
         PubKey::from_bytes(xonly_pk.serialize())

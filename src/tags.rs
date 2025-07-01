@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 pub type Tag = Vec<String>;
 
 /// collection of tags
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tags(pub Vec<Tag>);
 
 impl Tags {
@@ -22,12 +22,10 @@ impl Tags {
 
     /// find the first tag with the given key that has at least one value
     pub fn find(&self, key: String) -> Option<&Tag> {
-        for tag in &self.0 {
-            if tag.len() >= 2 && tag[0] == key {
-                return Some(tag);
-            }
-        }
-        None
+        self.0
+            .iter()
+            .find(|&tag| tag.len() >= 2 && tag[0] == key)
+            .map(|v| v as _)
     }
 
     /// find all tags with the given key that have at least one value
@@ -39,12 +37,10 @@ impl Tags {
 
     /// find tag with specific key and value
     pub fn find_with_value(&self, key: &str, value: &str) -> Option<&Tag> {
-        for tag in &self.0 {
-            if tag.len() >= 2 && tag[0] == key && tag[1] == value {
-                return Some(tag);
-            }
-        }
-        None
+        self.0
+            .iter()
+            .find(|&tag| tag.len() >= 2 && tag[0] == key && tag[1] == value)
+            .map(|v| v as _)
     }
 
     /// find the last tag with the given key
@@ -84,15 +80,9 @@ impl Tags {
 impl fmt::Display for Tags {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match serde_json::to_string(self) {
-            Ok(json) => write!(f, "{}", json),
-            Err(err) => write!(f, "Tags({})", err),
+            Ok(json) => write!(f, "{json}"),
+            Err(err) => write!(f, "Tags({err})"),
         }
-    }
-}
-
-impl Default for Tags {
-    fn default() -> Self {
-        Tags(vec![])
     }
 }
 

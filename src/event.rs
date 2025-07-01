@@ -18,15 +18,12 @@ pub struct Event {
 
 impl Event {
     pub fn verify_signature(&self) -> bool {
-        let pubkey = match XOnlyPublicKey::from_slice(self.pubkey.as_bytes()) {
+        let pubkey = match XOnlyPublicKey::from_byte_array(self.pubkey.0) {
             Ok(pk) => pk,
             Err(_) => return false,
         };
 
-        let signature = match schnorr::Signature::from_slice(self.sig.as_bytes()) {
-            Ok(sig) => sig,
-            Err(_) => return false,
-        };
+        let signature = schnorr::Signature::from_byte_array(self.sig.0);
 
         let hash = Sha256::digest(&self.serialize());
         SECP256K1.verify_schnorr(&signature, &hash, &pubkey).is_ok()
