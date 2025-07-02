@@ -1,4 +1,4 @@
-//! # rnostr
+//! # roastn
 //!
 //! nostr types and utilities
 //!
@@ -13,32 +13,41 @@ pub mod event_template;
 pub mod filter;
 pub mod helpers;
 pub mod keys;
-pub mod lmdb;
-pub mod nip05;
-pub mod nip11;
 pub mod nip19;
 pub mod pointers;
-pub mod server;
 pub mod timestamp;
 
-// re-export commonly used types
+#[cfg(all(not(target_arch = "wasm32"), not(target_arch = "wasm64")))]
+pub mod lmdb;
+#[cfg(all(not(target_arch = "wasm32"), not(target_arch = "wasm64")))]
+pub mod nip05;
+#[cfg(all(not(target_arch = "wasm32"), not(target_arch = "wasm64")))]
+pub mod nip11;
+#[cfg(all(not(target_arch = "wasm32"), not(target_arch = "wasm64")))]
+pub mod server;
+
 mod normalize;
-mod pool;
-mod relay;
 mod tags;
 mod types;
 
+#[cfg(all(not(target_arch = "wasm32"), not(target_arch = "wasm64")))]
+mod pool;
+#[cfg(all(not(target_arch = "wasm32"), not(target_arch = "wasm64")))]
+mod relay;
+
+// re-export commonly used types
 pub use event::Event;
 pub use event_template::EventTemplate;
 pub use filter::Filter;
 pub use keys::SecretKey;
 pub use normalize::*;
 pub use pointers::{EntityPointer, EventPointer, Pointer, ProfilePointer};
-pub use pool::{DirectedFilter, Pool, PoolOptions, PublishResult};
-pub use relay::Relay;
 pub use tags::{Tag, Tags};
 pub use timestamp::Timestamp;
 pub use types::*;
+
+#[cfg(all(not(target_arch = "wasm32"), not(target_arch = "wasm64")))]
+pub use pool::{DirectedFilter, Pool, PoolOptions, PublishResult};
 
 /// result type used throughout the library
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;

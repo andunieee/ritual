@@ -16,7 +16,7 @@ impl EventTemplate {
     /// returns a signed event with id, pubkey and sig
     pub fn finalize(self, secret_key: SecretKey) -> crate::Result<Event> {
         // create keypair from secret key
-        let secret_key = secp256k1::SecretKey::from_slice(secret_key.as_bytes())?;
+        let secret_key = secp256k1::SecretKey::from_byte_array(secret_key.0)?;
         let keypair = Keypair::from_secret_key(SECP256K1, &secret_key);
 
         // get the x-only public key

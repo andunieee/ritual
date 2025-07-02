@@ -1,9 +1,5 @@
 use crate::PubKey;
-use secp256k1::{
-    global::SECP256K1,
-    rand::{self, RngCore},
-    Keypair, SecretKey as Secp256k1SecretKey, XOnlyPublicKey,
-};
+use secp256k1::{global::SECP256K1, Keypair, SecretKey as Secp256k1SecretKey, XOnlyPublicKey};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use thiserror::Error;
@@ -22,13 +18,13 @@ pub type Result<T> = std::result::Result<T, KeyError>;
 
 /// A 32-byte secret key
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SecretKey([u8; 32]);
+pub struct SecretKey(pub [u8; 32]);
 
 impl SecretKey {
     /// generate a new random secret key
     pub fn generate() -> Self {
         let mut bytes = [0u8; 32];
-        rand::rng().fill_bytes(&mut bytes);
+        getrandom::fill(&mut bytes).expect("getrandom call should never fail");
         SecretKey(bytes)
     }
 

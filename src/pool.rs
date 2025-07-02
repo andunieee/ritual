@@ -1,7 +1,7 @@
 use crate::{
     normalize_url,
-    relay::{Occurrence, SubscriptionOptions},
-    Event, Filter, Relay, Result,
+    relay::{Occurrence, Relay, SubscriptionOptions},
+    Event, Filter, Result,
 };
 use dashmap::{DashMap, DashSet};
 use futures::future::join_all;
