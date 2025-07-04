@@ -7,7 +7,7 @@ license = "MIT"
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-secp256k1 = { path = "../rust-secp256k1", version = "0.31.1", default-features = false, features = ["global-context"] }
+secp256k1 = { path = "../rust-secp256k1", version = "0.31.1", features = ["rand", "global-context"] }
 sha2 = "0.10"
 url = "2.4"
 thiserror = "1.0"
@@ -25,10 +25,6 @@ bytes = "1.10.1"
 lowercase-hex = "0.1.0"
 slotmap = "1.0.7"
 glidesort = "0.1.2"
-getrandom = "0.3"
-
-[target.'cfg(any(target_arch = "wasm32", target_arch = "wasm64"))'.dependencies]
-getrandom = { version = "0.3", features = ["wasm_js"] }
 
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_arch = "wasm64")))'.dependencies]
 tokio = { version = "1.0", features = ["full"] }

@@ -1,5 +1,7 @@
 use crate::PubKey;
-use secp256k1::{global::SECP256K1, Keypair, SecretKey as Secp256k1SecretKey, XOnlyPublicKey};
+use secp256k1::{
+    global::SECP256K1, rand, Keypair, SecretKey as Secp256k1SecretKey, XOnlyPublicKey,
+};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use thiserror::Error;
@@ -23,9 +25,9 @@ pub struct SecretKey(pub [u8; 32]);
 impl SecretKey {
     /// generate a new random secret key
     pub fn generate() -> Self {
-        let mut bytes = [0u8; 32];
-        getrandom::fill(&mut bytes).expect("getrandom call should never fail");
-        SecretKey(bytes)
+        let mut rng = rand::rng();
+        let keypair = secp256k1::Keypair::new(SECP256K1, &mut rng);
+        SecretKey(keypair.secret_bytes())
     }
 
     /// create a new secret key from bytes
