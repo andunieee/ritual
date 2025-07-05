@@ -297,7 +297,7 @@ async fn handle_event_envelope(
 mod tests {
     use super::*;
     use crate::{
-        relay::Occurrence, EventTemplate, Filter, Kind, Pool, PoolOptions, Relay, SecretKey,
+        relay::Occurrence, relay::Relay, EventTemplate, Filter, Kind, Pool, PoolOptions, SecretKey,
         Timestamp,
     };
     use std::{cmp::min, net::SocketAddr};

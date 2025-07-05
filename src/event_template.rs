@@ -1,5 +1,5 @@
 use crate::{Event, Kind, PubKey, SecretKey, Signature, Tags, Timestamp, ID};
-use secp256k1::{Keypair, XOnlyPublicKey, SECP256K1};
+use secp256k1::{Keypair, SECP256K1};
 use sha2::{Digest, Sha256};
 use std::fmt;
 
@@ -15,13 +15,11 @@ pub struct EventTemplate {
 impl EventTemplate {
     /// returns a signed event with id, pubkey and sig
     pub fn finalize(self, secret_key: SecretKey) -> crate::Result<Event> {
-        // create keypair from secret key
-        let secret_key = secp256k1::SecretKey::from_byte_array(secret_key.0)?;
-        let keypair = Keypair::from_secret_key(SECP256K1, &secret_key);
+        let pubkey = secret_key.public_key();
 
-        // get the x-only public key
-        let (xonly_pk, _) = XOnlyPublicKey::from_keypair(&keypair);
-        let pubkey = PubKey::from_bytes(xonly_pk.serialize());
+        // create keypair from secret key
+        let keypair = Keypair::from_seckey_byte_array(SECP256K1, secret_key.0)
+            .expect("this never happens because SecretKey is always validated and right");
 
         // serialize and hash the event
         let serialized = self.serialize(pubkey);

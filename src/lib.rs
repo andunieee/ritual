@@ -14,6 +14,7 @@ pub mod filter;
 pub mod helpers;
 pub mod keys;
 pub mod nip19;
+pub mod nip44;
 pub mod pointers;
 pub mod timestamp;
 
@@ -39,7 +40,7 @@ mod relay;
 pub use event::Event;
 pub use event_template::EventTemplate;
 pub use filter::Filter;
-pub use keys::SecretKey;
+pub use keys::*;
 pub use normalize::*;
 pub use pointers::{EntityPointer, EventPointer, Pointer, ProfilePointer};
 pub use tags::{Tag, Tags};

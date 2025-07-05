@@ -11,14 +11,6 @@ pub enum IDError {
 }
 
 #[derive(Error, Debug)]
-pub enum PubKeyError {
-    #[error("invalid hex encoding")]
-    InvalidHex(#[from] lowercase_hex::FromHexError),
-    #[error("invalid public key length: expected 32 bytes, got {0}")]
-    InvalidLength(usize),
-}
-
-#[derive(Error, Debug)]
 pub enum SignatureError {
     #[error("invalid hex encoding")]
     InvalidHex(#[from] lowercase_hex::FromHexError),
@@ -86,69 +78,6 @@ impl fmt::Debug for ID {
 impl fmt::Display for ID {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "<id={}>", self.to_hex())
-    }
-}
-
-/// a 32-byte public key
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PubKey(pub [u8; 32]);
-
-impl PubKey {
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    pub fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-
-    pub fn as_u64_lossy(&self) -> u64 {
-        let bytes: [u8; 8] = self.0[8..16].try_into().unwrap();
-        u64::from_be_bytes(bytes)
-    }
-
-    pub fn from_hex(hex_str: &str) -> Result<Self, PubKeyError> {
-        if hex_str.len() != 64 {
-            return Err(PubKeyError::InvalidLength(hex_str.len() / 2));
-        }
-        let mut bytes = [0u8; 32];
-        lowercase_hex::decode_to_slice(hex_str, &mut bytes)?;
-        Ok(Self(bytes))
-    }
-
-    pub fn to_hex(&self) -> String {
-        lowercase_hex::encode(self.0)
-    }
-}
-
-impl Serialize for PubKey {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.to_hex())
-    }
-}
-
-impl<'de> Deserialize<'de> for PubKey {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        PubKey::from_hex(&s).map_err(Error::custom)
-    }
-}
-
-impl fmt::Debug for PubKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "<pk:{}>", self.to_hex())
-    }
-}
-
-impl fmt::Display for PubKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "<pk={}>", self.to_hex())
     }
 }
 

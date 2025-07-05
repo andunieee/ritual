@@ -15,7 +15,7 @@ pub enum Nip11Error {
     #[error("JSON parsing error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("public key parsing error")]
-    PubKeyParsing(#[from] crate::types::PubKeyError),
+    PubKeyParsing(#[from] crate::PubKeyError),
     #[error("URL normalization error")]
     UrlNormalization(#[from] Box<dyn std::error::Error + Send + Sync>),
 }

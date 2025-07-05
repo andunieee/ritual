@@ -23,7 +23,7 @@ pub enum Nip05Error {
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
     #[error("public key parsing error")]
-    PubKeyParsing(#[from] crate::types::PubKeyError),
+    PubKeyParsing(#[from] crate::PubKeyError),
 }
 
 pub type Result<T> = std::result::Result<T, Nip05Error>;

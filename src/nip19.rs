@@ -2,7 +2,7 @@
 //!
 //! this module provides encoding and decoding functions for NIP-19 bech32-encoded entities.
 
-use crate::{pointers::*, Kind, PubKey, SecretKey, ID};
+use crate::{pointers::*, Kind, PubKey, PubKeyError, SecretKey, SecretKeyError, ID};
 use bech32::{Bech32, Hrp};
 use thiserror::Error;
 
@@ -12,6 +12,10 @@ pub enum Nip19Error {
     Bech32(#[from] bech32::DecodeError),
     #[error("invalid data length: expected {expected}, got {actual}")]
     InvalidLength { expected: usize, actual: usize },
+    #[error("pubkey is invalid")]
+    InvalidPubKey(#[from] PubKeyError),
+    #[error("secret key is invalid")]
+    InvalidSecretKey(#[from] SecretKeyError),
     #[error("no {0} found")]
     MissingField(String),
     #[error("incomplete {0}")]
@@ -58,7 +62,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult> {
             }
             let mut bytes = [0u8; 32];
             bytes.copy_from_slice(&data);
-            Ok(DecodeResult::SecretKey(SecretKey::from_bytes(bytes)))
+            Ok(DecodeResult::SecretKey(SecretKey::from_bytes(bytes)?))
         }
         "note" => {
             if data.len() != 32 {
@@ -85,11 +89,11 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult> {
             }
             let mut bytes = [0u8; 32];
             bytes.copy_from_slice(&data);
-            Ok(DecodeResult::PubKey(PubKey::from_bytes(bytes)))
+            Ok(DecodeResult::PubKey(PubKey::from_bytes(bytes)?))
         }
         "nprofile" => {
             let mut result = ProfilePointer {
-                public_key: PubKey::from_bytes([0u8; 32]),
+                public_key: PubKey::from_bytes([0u8; 32])?,
                 relays: Vec::new(),
             };
             let mut curr = 0;
@@ -111,7 +115,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult> {
                         }
                         let mut bytes = [0u8; 32];
                         bytes.copy_from_slice(&value);
-                        result.public_key = PubKey::from_bytes(bytes);
+                        result.public_key = PubKey::from_bytes(bytes)?;
                         found_pubkey = true;
                     }
                     TLV_RELAY => {
@@ -172,7 +176,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult> {
                         }
                         let mut bytes = [0u8; 32];
                         bytes.copy_from_slice(&value);
-                        result.author = Some(PubKey::from_bytes(bytes));
+                        result.author = Some(PubKey::from_bytes(bytes)?);
                     }
                     TLV_KIND => {
                         if value.len() != 4 {
@@ -197,7 +201,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult> {
         }
         "naddr" => {
             let mut result = EntityPointer {
-                public_key: PubKey::from_bytes([0u8; 32]),
+                public_key: PubKey::from_bytes([0u8; 32])?,
                 kind: Kind(0),
                 identifier: String::new(),
                 relays: Vec::new(),
@@ -230,7 +234,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult> {
                         }
                         let mut bytes = [0u8; 32];
                         bytes.copy_from_slice(&value);
-                        result.public_key = PubKey::from_bytes(bytes);
+                        result.public_key = PubKey::from_bytes(bytes)?;
                         found_pubkey = true;
                     }
                     TLV_KIND => {
