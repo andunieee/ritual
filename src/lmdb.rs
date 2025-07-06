@@ -371,10 +371,6 @@ mod tests {
     use super::*;
     use crate::{event_template::EventTemplate, Filter, Kind, SecretKey, Timestamp};
 
-    fn sk() -> SecretKey {
-        SecretKey::generate()
-    }
-
     #[test]
     fn test_init_and_close() {
         let temp_dir = std::env::temp_dir().join("lmdb_test_init");
@@ -396,7 +392,7 @@ mod tests {
             content: "nothing".to_string(),
             ..Default::default()
         }
-        .finalize(sk())
+        .finalize(&SecretKey::generate())
         .unwrap();
 
         // save the event
@@ -426,7 +422,7 @@ mod tests {
             content: "nothing".to_string(),
             ..Default::default()
         }
-        .finalize(sk())
+        .finalize(&SecretKey::generate())
         .unwrap();
 
         // save the event
@@ -450,7 +446,7 @@ mod tests {
             content: "nothing".to_string(),
             ..Default::default()
         }
-        .finalize(sk())
+        .finalize(&SecretKey::generate())
         .unwrap();
 
         // save the event
@@ -492,7 +488,7 @@ mod tests {
                 created_at: Timestamp(i),
                 ..Default::default()
             }
-            .finalize(sk())
+            .finalize(&SecretKey::generate())
             .unwrap();
             store.save_event(&event).expect("failed to save event");
         }
@@ -521,7 +517,7 @@ mod tests {
                 kind: Kind(i as u16),
                 ..Default::default()
             }
-            .finalize(sk())
+            .finalize(&SecretKey::generate())
             .unwrap();
             store.save_event(&event).expect("failed to save event");
         }

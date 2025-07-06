@@ -484,7 +484,7 @@ mod tests {
             tags: crate::Tags::default(),
             content: "hello from test".to_string(),
         };
-        let event = event_template.finalize(secret_key).unwrap();
+        let event = event_template.finalize(&secret_key).unwrap();
         let event_id = event.id;
 
         // publish the event
@@ -604,7 +604,7 @@ mod tests {
                 tags: crate::Tags::default(),
                 content: format!("event with timestamp {}", i),
             };
-            let event = event_template.finalize(secret_key).unwrap();
+            let event = event_template.finalize(&secret_key).unwrap();
             events.push(event);
         }
 

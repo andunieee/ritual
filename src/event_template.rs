@@ -14,7 +14,7 @@ pub struct EventTemplate {
 
 impl EventTemplate {
     /// returns a signed event with id, pubkey and sig
-    pub fn finalize(self, secret_key: SecretKey) -> crate::Result<Event> {
+    pub fn finalize(self, secret_key: &SecretKey) -> crate::Result<Event> {
         let pubkey = secret_key.public_key();
 
         // create keypair from secret key
