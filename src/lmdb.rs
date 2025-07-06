@@ -2,7 +2,7 @@
 //!
 //! This module provides an LMDB-backed event store for Nostr events.
 
-use crate::{Event, Filter, TagMap, Timestamp, ID};
+use crate::{Event, Filter, Timestamp, ID};
 use fasthash::MumHasher;
 use heed::byteorder::LittleEndian;
 use heed::{byteorder, types::*, DefaultComparator};
@@ -11,6 +11,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use thiserror::Error;
+use velcro::hash_map;
 
 #[derive(Error, Debug)]
 pub enum LMDBError {
@@ -247,9 +248,7 @@ impl LMDBStore {
             // addressable event - add d tag
             let d_tag = event.tags.get_d();
             if !d_tag.is_empty() {
-                let mut tags = TagMap::new();
-                tags.insert("d".to_string(), vec![d_tag]);
-                filter.tags = Some(tags);
+                filter.tags = Some(hash_map!("d".to_string(): vec![d_tag]));
             }
         }
 

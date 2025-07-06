@@ -15,6 +15,7 @@ pub mod helpers;
 pub mod keys;
 pub mod nip19;
 pub mod nip44;
+pub mod nip49;
 pub mod pointers;
 pub mod timestamp;
 

@@ -1,4 +1,6 @@
-use crate::{helpers::is_valid_relay_url, Event, Filter, Kind, PubKey, Tag, TagMap, ID};
+use velcro::hash_map;
+
+use crate::{helpers::is_valid_relay_url, Event, Filter, Kind, PubKey, Tag, ID};
 
 /// Unified pointer enum for all Nostr pointer types
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,17 +167,12 @@ impl Pointer {
                 ids: Some(vec![p.id]),
                 ..Default::default()
             },
-            Pointer::Entity(p) => {
-                let mut tags = TagMap::new();
-                tags.insert("d".to_string(), vec![p.identifier.clone()]);
-
-                Filter {
-                    kinds: Some(vec![p.kind]),
-                    authors: Some(vec![p.public_key]),
-                    tags: Some(tags),
-                    ..Default::default()
-                }
-            }
+            Pointer::Entity(p) => Filter {
+                kinds: Some(vec![p.kind]),
+                authors: Some(vec![p.public_key]),
+                tags: Some(hash_map!("d".to_string(): vec![p.identifier.clone()])),
+                ..Default::default()
+            },
         }
     }
 

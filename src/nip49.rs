@@ -3,21 +3,21 @@
 //! This module implements NIP-49 for encrypting and decrypting private keys
 //! using a password-based key derivation function (scrypt) and XChaCha20-Poly1305.
 
-use crate::SecretKey;
-use bech32::{self, FromBase32, ToBase32};
+use crate::{keys, SecretKey};
+use bech32::{Bech32, Hrp};
 use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
     XChaCha20Poly1305, XNonce,
 };
-use rand::RngCore;
 use scrypt::{scrypt, Params};
+use secp256k1::rand::TryRngCore;
 use thiserror::Error;
 use unicode_normalization::UnicodeNormalization;
 
 #[derive(Error, Debug)]
 pub enum Nip49Error {
     #[error("bech32 encoding/decoding error")]
-    Bech32(#[from] bech32::Error),
+    Bech32(#[from] bech32::DecodeError),
     #[error("expected prefix ncryptsec")]
     InvalidPrefix,
     #[error("invalid data length")]
@@ -36,6 +36,8 @@ pub enum Nip49Error {
     ScryptOperation(#[from] scrypt::errors::InvalidOutputLen),
     #[error("invalid key length for cipher")]
     InvalidCipherKeyLength,
+    #[error("encrypted key is not valid")]
+    InvalidSecretKey(#[from] keys::SecretKeyError),
 }
 
 pub type Result<T> = std::result::Result<T, Nip49Error>;
@@ -71,8 +73,9 @@ pub fn encrypt(
     logn: u8,
     ksb: KeySecurityByte,
 ) -> Result<String> {
+    let mut rng = secp256k1::rand::rng();
     let mut salt = [0u8; 16];
-    rand::rng().fill_bytes(&mut salt);
+    rng.try_fill_bytes(&mut salt).expect("infallible");
 
     let n = 1u32 << logn;
     let key = get_key(password, &salt, n)?;
@@ -83,7 +86,9 @@ pub fn encrypt(
     concat[2..2 + 16].copy_from_slice(&salt);
 
     let mut nonce = [0u8; 24];
-    rand::rng().fill_bytes(&mut nonce);
+    secp256k1::rand::rng()
+        .try_fill_bytes(&mut nonce)
+        .expect("infallible");
     concat[2 + 16..2 + 16 + 24].copy_from_slice(&nonce);
 
     let ad = [ksb.into()];
@@ -104,19 +109,18 @@ pub fn encrypt(
 
     concat[2 + 16 + 24 + 1..].copy_from_slice(&ciphertext);
 
-    let encoded = bech32::encode("ncryptsec", concat.to_base32(), bech32::Variant::Bech32)?;
+    let encoded = bech32::encode::<Bech32>(Hrp::parse_unchecked("ncryptsec"), concat.as_slice())
+        .expect("encoding never fails");
     Ok(encoded)
 }
 
 /// decrypt to raw bytes
 pub fn decrypt(bech32_string: &str, password: &str) -> Result<SecretKey> {
-    let (hrp, data, _variant) = bech32::decode(bech32_string)?;
+    let (hrp, data) = bech32::decode(bech32_string)?;
 
-    if hrp != "ncryptsec" {
+    if hrp.as_str() != "ncryptsec1" {
         return Err(Nip49Error::InvalidPrefix);
     }
-
-    let data = Vec::<u8>::from_base32(&data)?;
 
     if data.len() < 91 {
         return Err(Nip49Error::InvalidDataLength);
@@ -153,7 +157,7 @@ pub fn decrypt(bech32_string: &str, password: &str) -> Result<SecretKey> {
         return Err(Nip49Error::InvalidKeyLength);
     }
 
-    Ok(SecretKey::from_bytes(decrypted.try_into().unwrap()))
+    Ok(SecretKey::from_bytes(decrypted.try_into().unwrap())?)
 }
 
 fn get_key(password: &str, salt: &[u8], n: u32) -> Result<Vec<u8>> {

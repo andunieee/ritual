@@ -23,6 +23,21 @@ pub enum Nip44Error {
     Secp256k1Error(secp256k1::Error),
 }
 
+impl std::fmt::Display for Nip44Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Nip44Error::InvalidPayloadLength => write!(f, "invalid payload length"),
+            Nip44Error::UnknownVersion => write!(f, "unknown version"),
+            Nip44Error::InvalidBase64 => write!(f, "invalid base64"),
+            Nip44Error::InvalidDataLength => write!(f, "invalid data length"),
+            Nip44Error::InvalidHmac => write!(f, "invalid hmac"),
+            Nip44Error::InvalidPadding => write!(f, "invalid padding"),
+            Nip44Error::PlaintextTooLarge => write!(f, "plaintext too large"),
+            Nip44Error::Secp256k1Error(e) => write!(f, "secp256k1 error: {}", e),
+        }
+    }
+}
+
 impl From<secp256k1::Error> for Nip44Error {
     fn from(e: secp256k1::Error) -> Self {
         Nip44Error::Secp256k1Error(e)
@@ -31,7 +46,7 @@ impl From<secp256k1::Error> for Nip44Error {
 
 pub fn encrypt(
     plaintext: &str,
-    conversation_key: [u8; 32],
+    conversation_key: &[u8; 32],
     custom_nonce: Option<[u8; 32]>,
 ) -> Result<String, Nip44Error> {
     let nonce = custom_nonce.unwrap_or_else(|| SecretKey::generate().0);
@@ -65,7 +80,7 @@ pub fn encrypt(
 
 pub fn decrypt(
     b64_ciphertext_wrapped: &str,
-    conversation_key: [u8; 32],
+    conversation_key: &[u8; 32],
 ) -> Result<String, Nip44Error> {
     let c_len = b64_ciphertext_wrapped.len();
     if c_len < 132 || c_len > 87472 {
@@ -129,10 +144,10 @@ pub fn generate_conversation_key(pubkey: &PubKey, sk: &SecretKey) -> [u8; 32] {
 }
 
 fn message_keys(
-    conversation_key: [u8; 32],
+    conversation_key: &[u8; 32],
     nonce: [u8; 32],
 ) -> Result<([u8; 32], [u8; 12], [u8; 32]), Nip44Error> {
-    let output = hkdf_expand_into(&conversation_key, &nonce, 3);
+    let output = hkdf_expand_into(conversation_key, &nonce, 3);
 
     let mut cc20key = [0u8; 32];
     let mut cc20nonce = [0u8; 12];
@@ -221,10 +236,10 @@ mod tests {
 
         assert_conversation_key_generation_pub(sk1_hex, &pub2.to_hex(), conversation_key_hex);
 
-        let actual = encrypt(plaintext, conversation_key, Some(salt)).unwrap();
+        let actual = encrypt(plaintext, &conversation_key, Some(salt)).unwrap();
         assert_eq!(actual, expected, "wrong encryption");
 
-        let decrypted = decrypt(expected, conversation_key).unwrap();
+        let decrypted = decrypt(expected, &conversation_key).unwrap();
         assert_eq!(decrypted, plaintext, "wrong decryption");
     }
 
@@ -235,7 +250,7 @@ mod tests {
     ) {
         let mut conversation_key: [u8; 32] = Default::default();
         lowercase_hex::decode_to_slice(conversation_key_hex, &mut conversation_key[0..32]).unwrap();
-        let result = decrypt(ciphertext, conversation_key);
+        let result = decrypt(ciphertext, &conversation_key);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), expected_error);
     }
@@ -278,7 +293,7 @@ mod tests {
         let expected_hmac_key = lowercase_hex::decode(hmac_key_hex).unwrap();
 
         let (actual_chacha_key, actual_chacha_nonce, actual_hmac_key) =
-            message_keys(expected_conversation_key, salt).unwrap();
+            message_keys(&expected_conversation_key, salt).unwrap();
 
         assert_eq!(expected_chacha_key, actual_chacha_key, "wrong chacha key");
         assert_eq!(
@@ -311,7 +326,7 @@ mod tests {
             "invalid plaintext sha256 hash"
         );
 
-        let actual_payload = encrypt(&plaintext, conversation_key, Some(salt)).unwrap();
+        let actual_payload = encrypt(&plaintext, &conversation_key, Some(salt)).unwrap();
         let mut h = Sha256::new();
         h.update(actual_payload.as_bytes());
         let actual_payload_sha256 = lowercase_hex::encode(h.finalize());

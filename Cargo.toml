@@ -28,6 +28,9 @@ glidesort = "0.1.2"
 base64 = "0.22.1"
 chacha20 = "0.9.1"
 hmac = "0.12.1"
+scrypt = "0.11.0"
+chacha20poly1305 = "0.10.1"
+velcro = "0.5.4"
 
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_arch = "wasm64")))'.dependencies]
 tokio = { version = "1.0", features = ["full"] }
