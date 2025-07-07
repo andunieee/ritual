@@ -18,24 +18,34 @@ use unicode_normalization::UnicodeNormalization;
 pub enum Nip49Error {
     #[error("bech32 encoding/decoding error")]
     Bech32(#[from] bech32::DecodeError),
+
     #[error("expected prefix ncryptsec")]
     InvalidPrefix,
+
     #[error("invalid data length")]
     InvalidDataLength,
+
     #[error("expected version 0x02, got {0:#x}")]
     InvalidVersion(u8),
+
     #[error("encryption failed: {0}")]
     EncryptionFailed(String),
+
     #[error("decryption failed: {0}")]
     DecryptionFailed(String),
+
     #[error("invalid decrypted key length")]
     InvalidKeyLength,
+
     #[error("scrypt parameter error")]
     ScryptParams(#[from] scrypt::errors::InvalidParams),
+
     #[error("scrypt operation error")]
     ScryptOperation(#[from] scrypt::errors::InvalidOutputLen),
+
     #[error("invalid key length for cipher")]
     InvalidCipherKeyLength,
+
     #[error("encrypted key is not valid")]
     InvalidSecretKey(#[from] keys::SecretKeyError),
 }
@@ -118,7 +128,7 @@ pub fn encrypt(
 pub fn decrypt(bech32_string: &str, password: &str) -> Result<SecretKey> {
     let (hrp, data) = bech32::decode(bech32_string)?;
 
-    if hrp.as_str() != "ncryptsec1" {
+    if hrp.as_str() != "ncryptsec" {
         return Err(Nip49Error::InvalidPrefix);
     }
 
@@ -161,7 +171,7 @@ pub fn decrypt(bech32_string: &str, password: &str) -> Result<SecretKey> {
 }
 
 fn get_key(password: &str, salt: &[u8], n: u32) -> Result<Vec<u8>> {
-    // Normalize password using NFKC
+    // normalize password using NFKC
     let normalized_password: String = password.nfkc().collect();
 
     let params = Params::new(
