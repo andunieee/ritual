@@ -1,7 +1,8 @@
+use crate::finalizer::Finalizer;
 use crate::helpers::{
     extract_event_id, extract_key_from_sub_id, key_from_sub_id, sub_id_from_key, SubscriptionKey,
 };
-use crate::{envelopes::*, Event, Filter, ID};
+use crate::{envelopes::*, Event, EventTemplate, Filter, Kind, Tags, Timestamp, ID};
 use dashmap::{DashMap, DashSet};
 use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt, TryFutureExt};
@@ -35,6 +36,12 @@ pub enum RelayError {
 
 pub type Result<T> = std::result::Result<T, RelayError>;
 
+pub(crate) struct SubSender {
+    pub(crate) ocurrences_sender: mpsc::Sender<Occurrence>,
+    pub(crate) filter: Filter,
+    pub(crate) auth_automatically: Option<Finalizer>,
+}
+
 #[derive(Clone)]
 pub struct Relay {
     pub url: Url,
@@ -44,8 +51,7 @@ pub struct Relay {
     write_queue: mpsc::Sender<String>,
 
     // by subscription
-    pub(crate) occurrences_sender_map:
-        Arc<Mutex<SlotMap<SubscriptionKey, (mpsc::Sender<Occurrence>, Filter)>>>,
+    pub(crate) sub_sender_map: Arc<Mutex<SlotMap<SubscriptionKey, SubSender>>>,
     id_skippers_map: Arc<Mutex<SecondaryMap<SubscriptionKey, Arc<DashSet<ID>>>>>,
 
     // by publish
@@ -65,7 +71,7 @@ impl Relay {
         let relay = Self {
             url: url.clone(),
             conn_write: Arc::new(Mutex::new(conn_write)),
-            occurrences_sender_map: Arc::new(Mutex::new(SlotMap::with_capacity_and_key(8))),
+            sub_sender_map: Arc::new(Mutex::new(SlotMap::with_capacity_and_key(8))),
             id_skippers_map: Arc::new(Mutex::new(SecondaryMap::with_capacity(8))),
             challenge: Arc::new(RwLock::new(None)),
             ok_callbacks: Arc::new(DashMap::new()),
@@ -101,9 +107,11 @@ impl Relay {
         // start message reader
         let pong_writer = relay.conn_write.clone();
         let id_skippers_map = relay.id_skippers_map.clone();
-        let occurrences_sender_map = relay.occurrences_sender_map.clone();
+        let sub_sender_map = relay.sub_sender_map.clone();
         let relay_challenge = relay.challenge.clone();
         let ok_callbacks = relay.ok_callbacks.clone();
+        let write_queue = relay.write_queue.clone();
+        let relay_url = relay.url.clone();
         tokio::spawn(async move {
             let mut buf = Vec::with_capacity(500);
             loop {
@@ -130,8 +138,9 @@ impl Relay {
                                     }),
                                 );
                             }
-                            for (_, (occ, _)) in occurrences_sender_map.lock().await.drain() {
-                                let _ = occ
+                            for (_, sub) in sub_sender_map.lock().await.drain() {
+                                let _ = sub
+                                    .ocurrences_sender
                                     .send(Occurrence::Close(
                                         CloseReason::RelayConnectionClosedByThem(frame.clone()),
                                     ))
@@ -143,8 +152,9 @@ impl Relay {
                             if let Some(on_close) = on_close.take() {
                                 let _ = on_close.send(format!("error: {}", err.to_string()));
                             }
-                            for (_, (occ, _)) in occurrences_sender_map.lock().await.drain() {
-                                let _ = occ
+                            for (_, sub) in sub_sender_map.lock().await.drain() {
+                                let _ = sub
+                                    .ocurrences_sender
                                     .send(Occurrence::Close(CloseReason::RelayConnectionError))
                                     .await;
                             }
@@ -177,13 +187,13 @@ impl Relay {
                         subscription_id,
                         event,
                     }) => {
-                        if let Some((occ, filter)) = occurrences_sender_map
+                        if let Some(sub) = sub_sender_map
                             .lock()
                             .await
                             .get(key_from_sub_id(subscription_id.as_str()))
                         {
-                            if filter.matches(&event) && event.verify_signature() {
-                                let _ = occ.send(Occurrence::Event(event)).await;
+                            if sub.filter.matches(&event) && event.verify_signature() {
+                                let _ = sub.ocurrences_sender.send(Occurrence::Event(event)).await;
                             } else {
                                 // TODO: penalize this relay?
                             }
@@ -191,14 +201,14 @@ impl Relay {
                     }
                     Ok(Envelope::Eose { subscription_id }) => {
                         let key = key_from_sub_id(subscription_id.as_str());
-                        let mut map = occurrences_sender_map.lock().await;
+                        let mut map = sub_sender_map.lock().await;
                         if let Some(occfilter) = map.get_mut(key) {
                             // since we got an EOSE our internal filter won't check for since/until anymore
-                            occfilter.1.since = None;
-                            occfilter.1.until = None;
+                            occfilter.filter.since = None;
+                            occfilter.filter.until = None;
 
                             // and we dispatch this to the listener
-                            let _ = occfilter.0.send(Occurrence::EOSE).await;
+                            let _ = occfilter.ocurrences_sender.send(Occurrence::EOSE).await;
                         };
                     }
                     Ok(Envelope::Ok {
@@ -226,12 +236,67 @@ impl Relay {
                         subscription_id,
                         reason,
                     }) => {
-                        if let Some((occ, _)) = occurrences_sender_map
-                            .lock()
-                            .await
-                            .remove(key_from_sub_id(&subscription_id))
-                        {
-                            let _ = occ
+                        let key = key_from_sub_id(&subscription_id);
+                        let mut ssm = sub_sender_map.lock().await;
+                        if let Some(sub) = ssm.get_mut(key) {
+                            if reason.starts_with("auth-required:") {
+                                if let Some(challenge) = relay_challenge.read().await.clone() {
+                                    if let Some(finalizer) = sub.auth_automatically.take() {
+                                        // instead of ending here after a CLOSED we will perform AUTH
+                                        if let Ok(auth_event) =
+                                            finalizer.finalize_event(EventTemplate {
+                                                created_at: Timestamp::now(),
+                                                kind: Kind(22242),
+                                                content: "".to_string(),
+                                                tags: Tags(vec![
+                                                    vec![
+                                                        "relay".to_string(),
+                                                        relay_url.to_string(),
+                                                    ],
+                                                    vec!["challenge".to_string(), challenge],
+                                                ]),
+                                            })
+                                        {
+                                            // send the AUTH message and wait for an OK
+                                            let (tx, rx) = oneshot::channel();
+                                            ok_callbacks.insert(auth_event.id.clone(), tx);
+                                            let _ = write_queue
+                                                .send(
+                                                    serde_json::to_string(&Envelope::AuthEvent {
+                                                        event: auth_event,
+                                                    })
+                                                    .unwrap(),
+                                                )
+                                                .await;
+
+                                            if let Ok(_) = rx.await {
+                                                // then restart the subscription
+                                                let _ = write_queue
+                                                    .send(
+                                                        serde_json::to_string(&Envelope::Req {
+                                                            subscription_id: subscription_id,
+                                                            filters: vec![sub.filter.clone()],
+                                                        })
+                                                        .unwrap(),
+                                                    )
+                                                    .await;
+
+                                                // and set this option to false this time to prevent an infinite
+                                                // AUTH loop
+                                                sub.auth_automatically = None;
+                                                continue;
+                                            }
+                                        };
+                                    }
+                                }
+                            }
+                        }
+
+                        // now that we checked for that circumstance and didn't hit the `continue`
+                        // we can proceed to remove this subscription and issue the final `Close`
+                        if let Some(sub) = ssm.remove(key) {
+                            let _ = sub
+                                .ocurrences_sender
                                 .send(Occurrence::Close(CloseReason::ClosedByThemWithReason(
                                     reason,
                                 )))
@@ -282,23 +347,23 @@ impl Relay {
         let mut closemsg = String::new();
         let (occurrences_sender, occurrences) = mpsc::channel::<Occurrence>(1);
 
-        let key = self
-            .occurrences_sender_map
-            .lock()
-            .await
-            .insert_with_key(|key| {
-                // use the key here to prepare the REQ msg
-                let id = sub_id_from_key(&key, &opts.label);
-                reqmsg = format!(
-                    "[\"REQ\",\"{}\",{}]",
-                    id,
-                    serde_json::to_string(&filter).unwrap()
-                );
-                closemsg = format!("[\"CLOSE\",\"{}\"]", id);
+        let key = self.sub_sender_map.lock().await.insert_with_key(|key| {
+            // use the key here to prepare the REQ msg
+            let id = sub_id_from_key(&key, &opts.label);
+            reqmsg = format!(
+                "[\"REQ\",\"{}\",{}]",
+                id,
+                serde_json::to_string(&filter).unwrap()
+            );
+            closemsg = format!("[\"CLOSE\",\"{}\"]", id);
 
-                // and store this tuple
-                (occurrences_sender.clone(), filter)
-            });
+            // and store this tuple
+            SubSender {
+                ocurrences_sender: occurrences_sender.clone(),
+                filter,
+                auth_automatically: opts.auth_automatically,
+            }
+        });
 
         if let Some(skip_ids) = opts.skip_ids {
             self.id_skippers_map.lock().await.insert(key, skip_ids);
@@ -327,8 +392,9 @@ impl Relay {
     }
 
     pub async fn close(self) -> () {
-        for (_, (occ, _)) in self.occurrences_sender_map.lock().await.drain() {
-            let _ = occ
+        for (_, sub) in self.sub_sender_map.lock().await.drain() {
+            let _ = sub
+                .ocurrences_sender
                 .send(Occurrence::Close(CloseReason::RelayConnectionClosedByUs))
                 .await;
         }
@@ -390,12 +456,16 @@ pub enum CloseReason {
     RelayConnectionError,
     ClosedByUs,
     ClosedByThemWithReason(String),
+    Unknown,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct SubscriptionOptions {
     pub label: Option<String>,
-    pub skip_ids: Option<Arc<DashSet<ID>>>,
+    pub timeout: Option<Duration>,
+    pub auth_automatically: Option<Finalizer>,
+
+    pub(crate) skip_ids: Option<Arc<DashSet<ID>>>,
 }
 
 #[derive(Debug)]

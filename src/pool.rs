@@ -4,9 +4,10 @@ use crate::{
     Event, Filter, Result,
 };
 use dashmap::{DashMap, DashSet};
-use futures::future::join_all;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+    Arc,
+};
 use tokio::sync::{mpsc, oneshot};
 
 /// pool manages connections to multiple relays
@@ -149,57 +150,104 @@ impl Pool {
         &self,
         urls: Vec<String>,
         filter: Filter,
-        label: Option<String>,
+        subscription_options: SubscriptionOptions,
     ) -> Vec<Event> {
-        let events = Arc::new(Mutex::new(Vec::with_capacity(
-            filter.limit.unwrap_or(500) * urls.len() / 2,
-        )));
+        let mut events = Vec::with_capacity(filter.limit.unwrap_or(500) * urls.len() / 2);
+
+        if let Ok(mut occurrences) = self.subscribe(urls, filter, subscription_options).await {
+            while let Some(occ) = occurrences.recv().await {
+                match occ {
+                    Occurrence::Event(event) => {
+                        events.push(event);
+                    }
+                    _ => {
+                        break;
+                    }
+                }
+            }
+        }
+
+        glidesort::sort_by_key(&mut events, |event| u32::MAX - event.created_at.0);
+        events
+    }
+
+    /// subscribe to events from multiple relays, returns a channel that will receive occurrences
+    pub async fn subscribe(
+        &self,
+        urls: Vec<String>,
+        filter: Filter,
+        subscription_options: SubscriptionOptions,
+    ) -> Result<mpsc::Receiver<Occurrence>> {
+        let (tx, rx) = mpsc::channel(256);
         let skip_ids = Arc::new(DashSet::new());
-        let mut futures = Vec::with_capacity(urls.len());
+        let eose_counter = Arc::new(AtomicUsize::new(urls.len()));
+        let closed_counter = Arc::new(AtomicUsize::new(urls.len()));
+        let eosed = Arc::new(AtomicBool::new(false));
 
         for url in urls {
-            let url = url.clone();
             let filter = filter.clone();
             let pool = self.clone();
-            let label = label.clone();
-            let skip_ids = skip_ids.clone();
-            let events = events.clone();
+            let opts = SubscriptionOptions {
+                skip_ids: Some(skip_ids.clone()),
+                ..subscription_options.clone()
+            };
+            let tx = tx.clone();
+            let eose_counter = eose_counter.clone();
+            let closed_counter = closed_counter.clone();
+            let eosed = eosed.clone();
 
-            let s = tokio::spawn(async move {
+            tokio::spawn(async move {
                 if let Ok(relay) = pool.ensure_relay(&url).await {
-                    if let Ok(mut sub) = relay
-                        .subscribe(
-                            filter,
-                            SubscriptionOptions {
-                                label: label,
-                                skip_ids: Some(skip_ids),
-                                ..Default::default()
-                            },
-                        )
-                        .await
-                    {
+                    if let Ok(mut sub) = relay.subscribe(filter, opts).await {
                         while let Some(occ) = sub.recv().await {
                             match occ {
                                 Occurrence::Event(event) => {
-                                    events.lock().await.push(event);
+                                    if tx.send(Occurrence::Event(event)).await.is_err() {
+                                        // receiver dropped
+                                        return;
+                                    }
                                 }
-                                Occurrence::EOSE => return,
-                                Occurrence::Close(_) => return,
+                                Occurrence::EOSE => {
+                                    if eose_counter.fetch_sub(1, Ordering::SeqCst) == 1 {
+                                        if !eosed.swap(true, Ordering::SeqCst) {
+                                            if tx.send(Occurrence::EOSE).await.is_err() {
+                                                // receiver dropped
+                                                return;
+                                            }
+                                        }
+                                    }
+                                }
+                                Occurrence::Close(_) => break,
                             }
                         }
                     }
                 }
-            });
 
-            futures.push(s);
+                // if we are here, it means ensure_relay or subscribe failed or the subscription ended.
+                if eose_counter.fetch_sub(1, Ordering::SeqCst) == 1 {
+                    if !eosed.swap(true, Ordering::SeqCst) {
+                        if tx.send(Occurrence::EOSE).await.is_err() {
+                            // receiver dropped
+                            return;
+                        }
+                    }
+                }
+
+                if closed_counter.fetch_sub(1, Ordering::SeqCst) == 1 {
+                    if tx
+                        .send(Occurrence::Close(crate::relay::CloseReason::Unknown))
+                        .await
+                        .is_err()
+                    {
+                        // receiver dropped
+                        return;
+                    }
+                }
+            });
         }
 
-        join_all(futures).await;
-        let mut r = events.lock().await;
-        let mut res = std::mem::take(&mut *r);
-
-        glidesort::sort_by_key(&mut res, |event| u32::MAX - event.created_at.0);
-        res
+        drop(tx);
+        Ok(rx)
     }
 
     /// close the pool
@@ -247,7 +295,16 @@ mod tests {
             ..Default::default()
         };
 
-        let events = pool.query(urls, filter, Some("test".to_string())).await;
+        let events = pool
+            .query(
+                urls,
+                filter,
+                SubscriptionOptions {
+                    label: Some("test".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await;
 
         assert!(events.len() > 10); // should be greater than 10 since we're reading 5 from each relay
         assert!(events.len() < 25); // but still we should have eliminated some duplicates so less than 25
@@ -268,8 +325,8 @@ mod tests {
 
         // should return the same relay instance
         assert!(std::ptr::eq(
-            relay1.occurrences_sender_map.as_ref() as *const _,
-            relay2.occurrences_sender_map.as_ref() as *const _
+            relay1.sub_sender_map.as_ref() as *const _,
+            relay2.sub_sender_map.as_ref() as *const _
         ));
     }
 }

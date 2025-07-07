@@ -29,6 +29,7 @@ pub mod nip11;
 #[cfg(all(not(target_arch = "wasm32"), not(target_arch = "wasm64")))]
 pub mod server;
 
+mod finalizer;
 mod normalize;
 mod tags;
 mod types;

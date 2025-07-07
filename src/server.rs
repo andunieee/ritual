@@ -297,8 +297,8 @@ async fn handle_event_envelope(
 mod tests {
     use super::*;
     use crate::{
-        relay::Occurrence, relay::Relay, EventTemplate, Filter, Kind, Pool, PoolOptions, SecretKey,
-        Timestamp,
+        relay::{Occurrence, Relay, SubscriptionOptions},
+        EventTemplate, Filter, Kind, Pool, PoolOptions, SecretKey, Timestamp,
     };
     use std::{cmp::min, net::SocketAddr};
     use tokio::time::{sleep, Duration};
@@ -634,7 +634,7 @@ mod tests {
             .query(
                 vec!["ws://127.0.0.1:8083".to_string()],
                 filter.clone(),
-                None,
+                SubscriptionOptions::default(),
             )
             .await;
         assert_eq!(even_events.len(), 5);
@@ -651,7 +651,7 @@ mod tests {
             .query(
                 vec!["ws://127.0.0.1:8084".to_string()],
                 filter.clone(),
-                None,
+                SubscriptionOptions::default(),
             )
             .await;
         assert_eq!(odd_events.len(), 5);
@@ -668,7 +668,7 @@ mod tests {
             .query(
                 vec!["ws://127.0.0.1:8085".to_string()],
                 filter.clone(),
-                None,
+                SubscriptionOptions::default(),
             )
             .await;
         assert_eq!(multiple_of_three_events.len(), 3);

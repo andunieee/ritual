@@ -20,7 +20,6 @@ pub enum Nip44Error {
     InvalidHmac,
     InvalidPadding,
     PlaintextTooLarge,
-    Secp256k1Error(secp256k1::Error),
 }
 
 impl std::fmt::Display for Nip44Error {
@@ -33,14 +32,7 @@ impl std::fmt::Display for Nip44Error {
             Nip44Error::InvalidHmac => write!(f, "invalid hmac"),
             Nip44Error::InvalidPadding => write!(f, "invalid padding"),
             Nip44Error::PlaintextTooLarge => write!(f, "plaintext too large"),
-            Nip44Error::Secp256k1Error(e) => write!(f, "secp256k1 error: {}", e),
         }
-    }
-}
-
-impl From<secp256k1::Error> for Nip44Error {
-    fn from(e: secp256k1::Error) -> Self {
-        Nip44Error::Secp256k1Error(e)
     }
 }
 
