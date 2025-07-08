@@ -5,49 +5,52 @@ use chacha20::{
 };
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+use thiserror::Error;
 
 use crate::{PubKey, SecretKey};
 
 const VERSION: u8 = 2;
 const MAX_PLAINTEXT_SIZE: usize = 65535;
 
-#[derive(Debug, PartialEq)]
-pub enum Nip44Error {
-    InvalidPayloadLength,
-    UnknownVersion,
-    InvalidBase64,
-    InvalidDataLength,
-    InvalidHmac,
-    InvalidPadding,
+#[derive(Error, Debug, PartialEq)]
+pub enum EncryptError {
+    #[error("plaintext too large")]
     PlaintextTooLarge,
 }
 
-impl std::fmt::Display for Nip44Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Nip44Error::InvalidPayloadLength => write!(f, "invalid payload length"),
-            Nip44Error::UnknownVersion => write!(f, "unknown version"),
-            Nip44Error::InvalidBase64 => write!(f, "invalid base64"),
-            Nip44Error::InvalidDataLength => write!(f, "invalid data length"),
-            Nip44Error::InvalidHmac => write!(f, "invalid hmac"),
-            Nip44Error::InvalidPadding => write!(f, "invalid padding"),
-            Nip44Error::PlaintextTooLarge => write!(f, "plaintext too large"),
-        }
-    }
+#[derive(Error, Debug, PartialEq)]
+pub enum DecryptError {
+    #[error("invalid payload length")]
+    InvalidPayloadLength,
+
+    #[error("unknown version")]
+    UnknownVersion,
+
+    #[error("invalid base64: {0}")]
+    InvalidBase64(#[from] base64::DecodeError),
+
+    #[error("invalid data length")]
+    InvalidDataLength,
+
+    #[error("invalid hmac")]
+    InvalidHmac,
+
+    #[error("invalid padding")]
+    InvalidPadding,
 }
 
 pub fn encrypt(
     plaintext: &str,
     conversation_key: &[u8; 32],
     custom_nonce: Option<[u8; 32]>,
-) -> Result<String, Nip44Error> {
+) -> Result<String, EncryptError> {
     let nonce = custom_nonce.unwrap_or_else(|| SecretKey::generate().0);
-    let (cc20key, cc20nonce, hmac_key) = message_keys(conversation_key, nonce)?;
+    let (cc20key, cc20nonce, hmac_key) = message_keys(conversation_key, nonce);
 
     let plain = plaintext.as_bytes();
     let size = plain.len();
     if size == 0 || size > MAX_PLAINTEXT_SIZE {
-        return Err(Nip44Error::PlaintextTooLarge);
+        return Err(EncryptError::PlaintextTooLarge);
     }
 
     let padded_len = calc_padded_len(size);
@@ -73,26 +76,24 @@ pub fn encrypt(
 pub fn decrypt(
     b64_ciphertext_wrapped: &str,
     conversation_key: &[u8; 32],
-) -> Result<String, Nip44Error> {
+) -> Result<String, DecryptError> {
     let c_len = b64_ciphertext_wrapped.len();
     if c_len < 132 || c_len > 87472 {
-        return Err(Nip44Error::InvalidPayloadLength);
+        return Err(DecryptError::InvalidPayloadLength);
     }
     if b64_ciphertext_wrapped.starts_with('#') {
-        return Err(Nip44Error::UnknownVersion);
+        return Err(DecryptError::UnknownVersion);
     }
 
-    let decoded = general_purpose::STANDARD
-        .decode(b64_ciphertext_wrapped)
-        .map_err(|_| Nip44Error::InvalidBase64)?;
+    let decoded = general_purpose::STANDARD.decode(b64_ciphertext_wrapped)?;
 
     if decoded[0] != VERSION {
-        return Err(Nip44Error::UnknownVersion);
+        return Err(DecryptError::UnknownVersion);
     }
 
     let d_len = decoded.len();
     if d_len < 99 || d_len > 65603 {
-        return Err(Nip44Error::InvalidDataLength);
+        return Err(DecryptError::InvalidDataLength);
     }
 
     let mut nonce = [0u8; 32];
@@ -100,12 +101,12 @@ pub fn decrypt(
     let ciphertext = &decoded[33..d_len - 32];
     let given_mac = &decoded[d_len - 32..];
 
-    let (cc20key, cc20nonce, hmac_key) = message_keys(conversation_key, nonce)?;
+    let (cc20key, cc20nonce, hmac_key) = message_keys(conversation_key, nonce);
 
     let expected_mac = sha256_hmac(&hmac_key, ciphertext, nonce);
 
     if given_mac != expected_mac.as_slice() {
-        return Err(Nip44Error::InvalidHmac);
+        return Err(DecryptError::InvalidHmac);
     }
 
     let mut padded = ciphertext.to_vec();
@@ -117,12 +118,12 @@ pub fn decrypt(
         || unpadded_len > MAX_PLAINTEXT_SIZE
         || padded.len() != 2 + calc_padded_len(unpadded_len)
     {
-        return Err(Nip44Error::InvalidPadding);
+        return Err(DecryptError::InvalidPadding);
     }
 
     let unpadded = &padded[2..2 + unpadded_len];
     if unpadded.is_empty() || unpadded.len() != unpadded_len {
-        return Err(Nip44Error::InvalidPadding);
+        return Err(DecryptError::InvalidPadding);
     }
 
     Ok(String::from_utf8_lossy(unpadded).to_string())
@@ -135,10 +136,7 @@ pub fn generate_conversation_key(pubkey: &PubKey, sk: &SecretKey) -> [u8; 32] {
     hkdf_extract("nip44-v2".as_bytes(), &shared_secret[0..32])
 }
 
-fn message_keys(
-    conversation_key: &[u8; 32],
-    nonce: [u8; 32],
-) -> Result<([u8; 32], [u8; 12], [u8; 32]), Nip44Error> {
+fn message_keys(conversation_key: &[u8; 32], nonce: [u8; 32]) -> ([u8; 32], [u8; 12], [u8; 32]) {
     let output = hkdf_expand_into(conversation_key, &nonce, 3);
 
     let mut cc20key = [0u8; 32];
@@ -149,7 +147,7 @@ fn message_keys(
     cc20nonce.copy_from_slice(&output[32..44]);
     hmac_key.copy_from_slice(&output[44..76]);
 
-    Ok((cc20key, cc20nonce, hmac_key))
+    (cc20key, cc20nonce, hmac_key)
 }
 
 #[inline]
@@ -238,7 +236,7 @@ mod tests {
     fn assert_decrypt_fail(
         conversation_key_hex: &str,
         ciphertext: &str,
-        expected_error: Nip44Error,
+        expected_error: DecryptError,
     ) {
         let mut conversation_key: [u8; 32] = Default::default();
         lowercase_hex::decode_to_slice(conversation_key_hex, &mut conversation_key[0..32]).unwrap();
@@ -285,7 +283,7 @@ mod tests {
         let expected_hmac_key = lowercase_hex::decode(hmac_key_hex).unwrap();
 
         let (actual_chacha_key, actual_chacha_nonce, actual_hmac_key) =
-            message_keys(&expected_conversation_key, salt).unwrap();
+            message_keys(&expected_conversation_key, salt);
 
         assert_eq!(expected_chacha_key, actual_chacha_key, "wrong chacha key");
         assert_eq!(
@@ -489,7 +487,7 @@ mod tests {
         assert_decrypt_fail(
             "ca2527a037347b91bea0c8a30fc8d9600ffd81ec00038671e3a0f0cb0fc9f642",
             "#Atqupco0WyaOW2IGDKcshwxI9xO8HgD/P8Ddt46CbxDbrhdG8VmJdU0MIDf06CUvEvdnr1cp1fiMtlM/GrE92xAc1K5odTpCzUB+mjXgbaqtntBUbTToSUoT0ovrlPwzGjyp",
-            Nip44Error::UnknownVersion,
+            DecryptError::UnknownVersion,
         );
     }
 
@@ -498,7 +496,7 @@ mod tests {
         assert_decrypt_fail(
             "36f04e558af246352dcf73b692fbd3646a2207bd8abd4b1cd26b234db84d9481",
             "AK1AjUvoYW3IS7C/BGRUoqEC7ayTfDUgnEPNeWTF/reBZFaha6EAIRueE9D1B1RuoiuFScC0Q94yjIuxZD3JStQtE8JMNacWFs9rlYP+ZydtHhRucp+lxfdvFlaGV/sQlqZz",
-            Nip44Error::UnknownVersion,
+            DecryptError::UnknownVersion,
         );
     }
 
@@ -507,7 +505,7 @@ mod tests {
         assert_decrypt_fail(
             "ca2527a037347b91bea0c8a30fc8d9600ffd81ec00038671e3a0f0cb0fc9f642",
             "Atфupco0WyaOW2IGDKcshwxI9xO8HgD/P8Ddt46CbxDbrhdG8VmJZE0UICD06CUvEvdnr1cp1fiMtlM/GrE92xAc1EwsVCQEgWEu2gsHUVf4JAa3TpgkmFc3TWsax0v6n/Wq",
-            Nip44Error::InvalidBase64,
+            DecryptError::InvalidBase64(base64::DecodeError::InvalidByte(2, 209)),
         );
     }
 
@@ -516,7 +514,7 @@ mod tests {
         assert_decrypt_fail(
             "cff7bd6a3e29a450fd27f6c125d5edeb0987c475fd1e8d97591e0d4d8a89763c",
             "Agn/l3ULCEAS4V7LhGFM6IGA17jsDUaFCKhrbXDANholyySBfeh+EN8wNB9gaLlg4j6wdBYh+3oK+mnxWu3NKRbSvQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            Nip44Error::InvalidHmac,
+            DecryptError::InvalidHmac,
         );
     }
 
@@ -525,7 +523,7 @@ mod tests {
         assert_decrypt_fail(
             "cfcc9cf682dfb00b11357f65bdc45e29156b69db424d20b3596919074f5bf957",
             "AmWxSwuUmqp9UsQX63U7OQ6K1thLI69L7G2b+j4DoIr0oRWQ8avl4OLqWZiTJ10vIgKrNqjoaX+fNhE9RqmR5g0f6BtUg1ijFMz71MO1D4lQLQfW7+UHva8PGYgQ1QpHlKgR",
-            Nip44Error::InvalidHmac,
+            DecryptError::InvalidHmac,
         );
     }
 
@@ -534,7 +532,7 @@ mod tests {
         assert_decrypt_fail(
             "5254827d29177622d40a7b67cad014fe7137700c3c523903ebbe3e1b74d40214",
             "Anq2XbuLvCuONcr7V0UxTh8FAyWoZNEdBHXvdbNmDZHB573MI7R7rrTYftpqmvUpahmBC2sngmI14/L0HjOZ7lWGJlzdh6luiOnGPc46cGxf08MRC4CIuxx3i2Lm0KqgJ7vA",
-            Nip44Error::InvalidPadding,
+            DecryptError::InvalidPadding,
         );
     }
 
@@ -543,7 +541,7 @@ mod tests {
         assert_decrypt_fail(
             "fea39aca9aa8340c3a78ae1f0902aa7e726946e4efcd7783379df8096029c496",
             "An1Cg+O1TIhdav7ogfSOYvCj9dep4ctxzKtZSniCw5MwRrrPJFyAQYZh5VpjC2QYzny5LIQ9v9lhqmZR4WBYRNJ0ognHVNMwiFV1SHpvUFT8HHZN/m/QarflbvDHAtO6pY16",
-            Nip44Error::InvalidPadding,
+            DecryptError::InvalidPadding,
         );
     }
 
@@ -552,7 +550,7 @@ mod tests {
         assert_decrypt_fail(
             "0c4cffb7a6f7e706ec94b2e879f1fc54ff8de38d8db87e11787694d5392d5b3f",
             "Am+f1yZnwnOs0jymZTcRpwhDRHTdnrFcPtsBzpqVdD6b2NZDaNm/TPkZGr75kbB6tCSoq7YRcbPiNfJXNch3Tf+o9+zZTMxwjgX/nm3yDKR2kHQMBhVleCB9uPuljl40AJ8kXRD0gjw+aYRJFUMK9gCETZAjjmrsCM+nGRZ1FfNsHr6Z",
-            Nip44Error::InvalidPadding,
+            DecryptError::InvalidPadding,
         );
     }
 
@@ -561,7 +559,7 @@ mod tests {
         assert_decrypt_fail(
             "5cd2d13b9e355aeb2452afbd3786870dbeecb9d355b12cb0a3b6e9da5744cd35",
             "",
-            Nip44Error::InvalidPayloadLength,
+            DecryptError::InvalidPayloadLength,
         );
     }
 
@@ -570,7 +568,7 @@ mod tests {
         assert_decrypt_fail(
             "d61d3f09c7dfe1c0be91af7109b60a7d9d498920c90cbba1e137320fdd938853",
             "Ag==",
-            Nip44Error::InvalidPayloadLength,
+            DecryptError::InvalidPayloadLength,
         );
     }
 
@@ -579,7 +577,7 @@ mod tests {
         assert_decrypt_fail(
             "873bb0fc665eb950a8e7d5971965539f6ebd645c83c08cd6a85aafbad0f0bc47",
             "AqxgToSh3H7iLYRJjoWAM+vSv/Y1mgNlm6OWWjOYUClrFF8=",
-            Nip44Error::InvalidPayloadLength,
+            DecryptError::InvalidPayloadLength,
         );
     }
 
@@ -588,7 +586,7 @@ mod tests {
         assert_decrypt_fail(
             "9f2fef8f5401ac33f74641b568a7a30bb19409c76ffdc5eae2db6b39d2617fbe",
             "Ap/2SEZCVFIhYk6qx7nqJxM6TMI1ZoKmAzrO7vBDVJhhuZXWiM20i/tIsbjT0KxkJs2MZjh1oXNYMO9ggfk7i47WQA==",
-            Nip44Error::InvalidPayloadLength,
+            DecryptError::InvalidPayloadLength,
         );
     }
 
@@ -639,3 +637,4 @@ mod tests {
         );
     }
 }
+

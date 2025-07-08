@@ -20,12 +20,16 @@ use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 pub enum RelayError {
     #[error("hyper error: {0}")]
     Hyper(#[from] hyper::Error),
+
     #[error("websocket error: {0}")]
     WebSocket(#[from] hyper_tungstenite::tungstenite::Error),
+
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
     #[error("custom relay error: {0}")]
     CustomRelay(String),
 }
