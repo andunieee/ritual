@@ -317,8 +317,8 @@ mod tests {
             )
             .await;
 
-        assert!(events.len() > 10); // should be greater than 10 since we're reading 5 from each relay
-        assert!(events.len() < 25); // but still we should have eliminated some duplicates so less than 25
+        assert!(events.len() > 10, "was {}", events.len()); // should be greater than 10 since we're reading 5 from each relay
+        assert!(events.len() < 25, "was {}", events.len()); // but still we should have eliminated some duplicates so less than 25
 
         // ok let's be sure there are no duplicates
         let mut ids = HashSet::new();

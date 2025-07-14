@@ -392,8 +392,7 @@ mod tests {
             content: "nothing".to_string(),
             ..Default::default()
         }
-        .finalize(&SecretKey::generate())
-        .unwrap();
+        .finalize(&SecretKey::generate());
 
         // save the event
         store.save_event(&event).expect("failed to save event");
@@ -422,8 +421,7 @@ mod tests {
             content: "nothing".to_string(),
             ..Default::default()
         }
-        .finalize(&SecretKey::generate())
-        .unwrap();
+        .finalize(&SecretKey::generate());
 
         // save the event
         store.save_event(&event).expect("failed to save event");
@@ -446,8 +444,7 @@ mod tests {
             content: "nothing".to_string(),
             ..Default::default()
         }
-        .finalize(&SecretKey::generate())
-        .unwrap();
+        .finalize(&SecretKey::generate());
 
         // save the event
         store.save_event(&event).expect("failed to save event");
@@ -488,8 +485,7 @@ mod tests {
                 created_at: Timestamp(i),
                 ..Default::default()
             }
-            .finalize(&SecretKey::generate())
-            .unwrap();
+            .finalize(&SecretKey::generate());
             store.save_event(&event).expect("failed to save event");
         }
 
@@ -517,8 +513,7 @@ mod tests {
                 kind: Kind(i as u16),
                 ..Default::default()
             }
-            .finalize(&SecretKey::generate())
-            .unwrap();
+            .finalize(&SecretKey::generate());
             store.save_event(&event).expect("failed to save event");
         }
 
