@@ -1,3 +1,4 @@
+use thiserror::Error;
 use velcro::hash_map;
 
 use crate::{helpers::is_valid_relay_url, Event, Filter, Kind, PubKey, Tag, ID};
@@ -10,6 +11,15 @@ pub enum Pointer {
     Entity(EntityPointer),
 }
 
+#[derive(Error, Debug)]
+pub enum Error {
+    #[error("tag should have at least 2 elements")]
+    ShortTag,
+
+    #[error("something is invalid")]
+    Invalid,
+}
+
 /// Pointer to a Nostr profile
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfilePointer {
@@ -19,12 +29,12 @@ pub struct ProfilePointer {
 
 impl ProfilePointer {
     /// Create a ProfilePointer from a tag
-    pub fn from_tag(tag: &Tag) -> crate::Result<Self> {
+    pub fn from_tag(tag: &Tag) -> Result<Self, Error> {
         if tag.len() < 2 {
-            return Err("tag must have at least 2 elements".into());
+            return Err(Error::ShortTag);
         }
 
-        let public_key = PubKey::from_hex(&tag[1])?;
+        let public_key = PubKey::from_hex(&tag[1]).map_err(|_| Error::Invalid)?;
         let relays = if tag.len() > 2 && is_valid_relay_url(&tag[2]) {
             vec![tag[2].clone()]
         } else {
@@ -46,12 +56,12 @@ pub struct EventPointer {
 
 impl EventPointer {
     /// Create an EventPointer from a tag
-    pub fn from_tag(tag: &Tag) -> crate::Result<Self> {
+    pub fn from_tag(tag: &Tag) -> Result<Self, Error> {
         if tag.len() < 2 {
-            return Err("tag must have at least 2 elements".into());
+            return Err(Error::ShortTag);
         }
 
-        let id = ID::from_hex(&tag[1])?;
+        let id = ID::from_hex(&tag[1]).map_err(|_| Error::Invalid)?;
         let relays = if tag.len() > 2 && is_valid_relay_url(&tag[2]) {
             vec![tag[2].clone()]
         } else {
@@ -84,21 +94,19 @@ pub struct EntityPointer {
 
 impl EntityPointer {
     /// create an EntityPointer from a tag
-    pub fn from_tag(tag: &Tag) -> crate::Result<Self> {
+    pub fn from_tag(tag: &Tag) -> Result<Self, Error> {
         if tag.len() < 2 {
-            return Err("tag must have at least 2 elements".into());
+            return Err(Error::ShortTag);
         }
 
         let parts: Vec<&str> = tag[1].splitn(3, ':').collect();
         if parts.len() != 3 {
-            return Err(format!("invalid addr ref '{}'", tag[1]).into());
+            return Err(Error::Invalid);
         }
 
-        let kind: u16 = parts[0]
-            .parse()
-            .map_err(|_| format!("invalid addr kind '{}'", parts[0]))?;
+        let kind: u16 = parts[0].parse().map_err(|_| Error::Invalid)?;
 
-        let public_key = PubKey::from_hex(parts[1])?;
+        let public_key = PubKey::from_hex(parts[1]).map_err(|_| Error::Invalid)?;
         let identifier = parts[2].to_string();
 
         let relays = if tag.len() > 2 && is_valid_relay_url(&tag[2]) {

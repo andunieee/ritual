@@ -12,31 +12,10 @@ use crate::{PubKey, SecretKey};
 const VERSION: u8 = 2;
 const MAX_PLAINTEXT_SIZE: usize = 65535;
 
-#[derive(Error, Debug, PartialEq)]
+#[derive(Error, Debug)]
 pub enum EncryptError {
     #[error("plaintext too large")]
     PlaintextTooLarge,
-}
-
-#[derive(Error, Debug, PartialEq)]
-pub enum DecryptError {
-    #[error("invalid payload length")]
-    InvalidPayloadLength,
-
-    #[error("unknown version")]
-    UnknownVersion,
-
-    #[error("invalid base64: {0}")]
-    InvalidBase64(#[from] base64::DecodeError),
-
-    #[error("invalid data length")]
-    InvalidDataLength,
-
-    #[error("invalid hmac")]
-    InvalidHmac,
-
-    #[error("invalid padding")]
-    InvalidPadding,
 }
 
 pub fn encrypt(
@@ -71,6 +50,27 @@ pub fn encrypt(
     concat.extend_from_slice(&mac);
 
     Ok(general_purpose::STANDARD.encode(&concat))
+}
+
+#[derive(Error, Debug, PartialEq)]
+pub enum DecryptError {
+    #[error("invalid payload length")]
+    InvalidPayloadLength,
+
+    #[error("unknown version")]
+    UnknownVersion,
+
+    #[error("invalid base64: {0}")]
+    InvalidBase64(#[from] base64::DecodeError),
+
+    #[error("invalid data length")]
+    InvalidDataLength,
+
+    #[error("invalid hmac")]
+    InvalidHmac,
+
+    #[error("invalid padding")]
+    InvalidPadding,
 }
 
 pub fn decrypt(
@@ -637,4 +637,3 @@ mod tests {
         );
     }
 }
-

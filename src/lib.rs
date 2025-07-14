@@ -43,7 +43,7 @@ mod relay;
 pub use event::Event;
 pub use event_template::EventTemplate;
 pub use filter::Filter;
-pub use keys::*;
+pub use keys::{PubKey, SecretKey};
 pub use normalize::*;
 pub use pointers::{EntityPointer, EventPointer, Pointer, ProfilePointer};
 pub use tags::{Tag, Tags};
@@ -52,6 +52,3 @@ pub use types::*;
 
 #[cfg(all(not(target_arch = "wasm32"), not(target_arch = "wasm64")))]
 pub use pool::{DirectedFilter, Pool, PoolOptions, PublishResult};
-
-/// result type used throughout the library
-pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;

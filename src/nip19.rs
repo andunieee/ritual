@@ -2,37 +2,48 @@
 //!
 //! this module provides encoding and decoding functions for NIP-19 bech32-encoded entities.
 
-use crate::{pointers::*, Kind, PubKey, PubKeyError, SecretKey, SecretKeyError, ID};
+use crate::{keys, pointers::*, Kind, PubKey, SecretKey, ID};
 use bech32::{Bech32, Hrp};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum Nip19Error {
+pub enum DecodeError {
     #[error("bech32 decoding error")]
     Bech32(#[from] bech32::DecodeError),
+
     #[error("invalid data length: expected {expected}, got {actual}")]
     InvalidLength { expected: usize, actual: usize },
+
     #[error("pubkey is invalid")]
-    InvalidPubKey(#[from] PubKeyError),
+    InvalidPubKey(#[from] keys::PubKeyError),
+
     #[error("secret key is invalid")]
-    InvalidSecretKey(#[from] SecretKeyError),
+    InvalidSecretKey(#[from] keys::SecretKeyError),
+
     #[error("no {0} found")]
     MissingField(String),
+
     #[error("incomplete {0}")]
     Incomplete(String),
+
     #[error("unknown prefix '{0}'")]
     UnknownPrefix(String),
+
     #[error("unexpected decode result for {0}")]
     UnexpectedResult(String),
+
     #[error("TLV value too long")]
     TlvTooLong,
+
     #[error("UTF-8 conversion error")]
     Utf8(#[from] std::string::FromUtf8Error),
+
     #[error("invalid uint32 value for kind")]
     InvalidKind,
-}
 
-pub type Result<T> = std::result::Result<T, Nip19Error>;
+    #[error("kind conversion error")]
+    KindConversionError,
+}
 
 const TLV_DEFAULT: u8 = 0;
 const TLV_RELAY: u8 = 1;
@@ -49,13 +60,13 @@ pub enum DecodeResult {
 }
 
 /// decode a bech32-encoded NIP-19 string
-pub fn decode(bech32_string: &str) -> Result<DecodeResult> {
+pub fn decode(bech32_string: &str) -> Result<DecodeResult, DecodeError> {
     let (prefix, data) = bech32::decode(bech32_string)?;
 
     match prefix.as_str() {
         "nsec" => {
             if data.len() != 32 {
-                return Err(Nip19Error::InvalidLength {
+                return Err(DecodeError::InvalidLength {
                     expected: 32,
                     actual: data.len(),
                 });
@@ -66,7 +77,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult> {
         }
         "note" => {
             if data.len() != 32 {
-                return Err(Nip19Error::InvalidLength {
+                return Err(DecodeError::InvalidLength {
                     expected: 32,
                     actual: data.len(),
                 });
@@ -82,7 +93,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult> {
         }
         "npub" => {
             if data.len() != 32 {
-                return Err(Nip19Error::InvalidLength {
+                return Err(DecodeError::InvalidLength {
                     expected: 32,
                     actual: data.len(),
                 });
@@ -100,7 +111,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult> {
             let mut found_pubkey = false;
 
             while curr < data.len() {
-                let (typ, value) = read_tlv_entry(&data[curr..])?;
+                let (typ, value) = read_tlv_entry(&data[curr..]);
                 if value.is_empty() {
                     break;
                 }
@@ -108,7 +119,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult> {
                 match typ {
                     TLV_DEFAULT => {
                         if value.len() != 32 {
-                            return Err(Nip19Error::InvalidLength {
+                            return Err(DecodeError::InvalidLength {
                                 expected: 32,
                                 actual: value.len(),
                             });
@@ -130,7 +141,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult> {
             }
 
             if !found_pubkey {
-                return Err(Nip19Error::MissingField("pubkey for nprofile".to_string()));
+                return Err(DecodeError::MissingField("pubkey for nprofile".to_string()));
             }
 
             Ok(DecodeResult::Profile(result))
@@ -146,7 +157,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult> {
             let mut found_id = false;
 
             while curr < data.len() {
-                let (typ, value) = read_tlv_entry(&data[curr..])?;
+                let (typ, value) = read_tlv_entry(&data[curr..]);
                 if value.is_empty() {
                     break;
                 }
@@ -154,7 +165,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult> {
                 match typ {
                     TLV_DEFAULT => {
                         if value.len() != 32 {
-                            return Err(Nip19Error::InvalidLength {
+                            return Err(DecodeError::InvalidLength {
                                 expected: 32,
                                 actual: value.len(),
                             });
@@ -169,7 +180,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult> {
                     }
                     TLV_AUTHOR => {
                         if value.len() != 32 {
-                            return Err(Nip19Error::InvalidLength {
+                            return Err(DecodeError::InvalidLength {
                                 expected: 32,
                                 actual: value.len(),
                             });
@@ -180,9 +191,12 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult> {
                     }
                     TLV_KIND => {
                         if value.len() != 4 {
-                            return Err(Nip19Error::InvalidKind);
+                            return Err(DecodeError::InvalidKind);
                         }
-                        let kind_bytes: [u8; 4] = value.clone().try_into().unwrap();
+                        let kind_bytes: [u8; 4] = value
+                            .clone()
+                            .try_into()
+                            .map_err(|_| DecodeError::KindConversionError)?;
                         result.kind = Some(Kind(u32::from_be_bytes(kind_bytes) as u16));
                     }
                     _ => {
@@ -194,7 +208,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult> {
             }
 
             if !found_id {
-                return Err(Nip19Error::MissingField("id for nevent".to_string()));
+                return Err(DecodeError::MissingField("id for nevent".to_string()));
             }
 
             Ok(DecodeResult::Event(result))
@@ -212,7 +226,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult> {
             let mut found_pubkey = false;
 
             while curr < data.len() {
-                let (typ, value) = read_tlv_entry(&data[curr..])?;
+                let (typ, value) = read_tlv_entry(&data[curr..]);
                 if value.is_empty() {
                     break;
                 }
@@ -227,7 +241,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult> {
                     }
                     TLV_AUTHOR => {
                         if value.len() != 32 {
-                            return Err(Nip19Error::InvalidLength {
+                            return Err(DecodeError::InvalidLength {
                                 expected: 32,
                                 actual: value.len(),
                             });
@@ -239,9 +253,12 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult> {
                     }
                     TLV_KIND => {
                         if value.len() != 4 {
-                            return Err(Nip19Error::InvalidKind);
+                            return Err(DecodeError::InvalidKind);
                         }
-                        let kind_bytes: [u8; 4] = value.clone().try_into().unwrap();
+                        let kind_bytes: [u8; 4] = value
+                            .clone()
+                            .try_into()
+                            .map_err(|_| DecodeError::KindConversionError)?;
                         result.kind = Kind(u32::from_be_bytes(kind_bytes) as u16);
                         found_kind = true;
                     }
@@ -254,18 +271,27 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult> {
             }
 
             if !found_kind || !found_identifier || !found_pubkey {
-                return Err(Nip19Error::Incomplete("naddr".to_string()));
+                return Err(DecodeError::Incomplete("naddr".to_string()));
             }
 
             Ok(DecodeResult::Entity(result))
         }
-        _ => Err(Nip19Error::UnknownPrefix(prefix.to_string())),
+        _ => Err(DecodeError::UnknownPrefix(prefix.to_string())),
     }
 }
 
+#[derive(Error, Debug)]
+pub enum EncodeError {
+    #[error("bech32 encoding error: {0}")]
+    Bech32(#[from] bech32::EncodeError),
+}
+
 /// encode a secret key as nsec
-pub fn encode_nsec(sk: &SecretKey) -> String {
-    bech32::encode::<Bech32>(Hrp::parse_unchecked("nsec"), sk.as_bytes()).unwrap()
+pub fn encode_nsec(sk: &SecretKey) -> Result<String, EncodeError> {
+    Ok(bech32::encode::<Bech32>(
+        Hrp::parse_unchecked("nsec"),
+        sk.as_bytes(),
+    )?)
 }
 
 /// encode a public key as npub
@@ -334,7 +360,7 @@ pub fn encode_pointer(pointer: &Pointer) -> String {
 }
 
 /// convert a bech32 string to a pointer
-pub fn to_pointer(code: &str) -> Result<Pointer> {
+pub fn to_pointer(code: &str) -> Result<Pointer, DecodeError> {
     match decode(code)? {
         DecodeResult::PubKey(pk) => Ok(Pointer::Profile(ProfilePointer {
             public_key: pk,
@@ -343,25 +369,25 @@ pub fn to_pointer(code: &str) -> Result<Pointer> {
         DecodeResult::Profile(p) => Ok(Pointer::Profile(p)),
         DecodeResult::Event(p) => Ok(Pointer::Event(p)),
         DecodeResult::Entity(p) => Ok(Pointer::Entity(p)),
-        _ => Err(Nip19Error::UnexpectedResult(code.to_string())),
+        _ => Err(DecodeError::UnexpectedResult(code.to_string())),
     }
 }
 
 /// read a TLV entry from data
-fn read_tlv_entry(data: &[u8]) -> Result<(u8, Vec<u8>)> {
+fn read_tlv_entry(data: &[u8]) -> (u8, Vec<u8>) {
     if data.len() < 2 {
-        return Ok((0, Vec::new()));
+        return (0, Vec::new());
     }
 
     let typ = data[0];
     let length = data[1] as usize;
 
     if data.len() < 2 + length {
-        return Ok((typ, Vec::new()));
+        return (typ, Vec::new());
     }
 
     let value = data[2..2 + length].to_vec();
-    Ok((typ, value))
+    (typ, value)
 }
 
 /// write a TLV entry to buffer
@@ -398,7 +424,7 @@ mod tests {
     fn test_encode_decode_nsec() {
         let sk_hex = "fe20f3381b9404e9a35afb49b3dc070a4dc1ffd321ab8f3eae979ab96f601e3a";
         let sk = SecretKey::from_hex(sk_hex).unwrap();
-        let nsec = encode_nsec(&sk);
+        let nsec = encode_nsec(&sk).unwrap();
         assert_eq!(
             nsec,
             "nsec1lcs0xwqmjszwng66ldym8hq8pfxurl7nyx4c704wj7dtjmmqrcaqazp4dg"

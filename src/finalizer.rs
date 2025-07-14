@@ -1,14 +1,31 @@
-use crate::{event_template::EventTemplate, Event, SecretKey};
+use std::fmt::Debug;
+use thiserror::Error;
+
+use crate::{event_template::EventTemplate, nip46::BunkerClient, Event, SecretKey};
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("unauthorized by user")]
+    Unauthorized,
+
+    #[error("something went wrong, we don't know what")]
+    SomethingWentWrong,
+}
 
 #[derive(Debug, Clone)]
 pub enum Finalizer {
-    SecretKey { sk: SecretKey },
+    Plain(SecretKey),
+    Bunker(BunkerClient),
 }
 
 impl Finalizer {
-    pub fn finalize_event(&self, evt: EventTemplate) -> crate::Result<Event> {
+    pub async fn finalize_event(&self, evt: EventTemplate) -> Result<Event, Error> {
         match self {
-            Finalizer::SecretKey { sk } => evt.finalize(sk),
+            Self::Plain(sk) => Ok(evt.finalize(sk)),
+            Self::Bunker(_) => Err(Error::SomethingWentWrong), // bk
+                                                               // .finalize_event(evt)
+                                                               // .await
+                                                               // .map_err(|_| Error::SomethingWentWrong),
         }
     }
 }

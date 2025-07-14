@@ -19,30 +19,28 @@ use tokio_tungstenite::{connect_async_tls_with_config, MaybeTlsStream, WebSocket
 use url::Url;
 
 #[derive(Error, Debug)]
-pub enum RelayError {
-    #[error("relay returned ok=false: {0}")]
-    OKFalseWithReason(String),
-    #[error("relay connection error: {0}")]
-    RelayConnectionError(#[from] tokio_tungstenite::tungstenite::Error),
-    #[error("JSON error: {0}")]
-    JSON(#[from] serde_json::Error),
-    #[error("failed to send to {0}: {1}")]
-    PublishSendError(Url, String),
-    #[error("IO error")]
-    IOError(#[from] tokio::sync::oneshot::error::RecvError),
-    #[error("Hex error")]
-    HexEncodingError(#[from] lowercase_hex::FromHexError),
+pub enum PublishError {
+    #[error("ok=false, relay message: {0}")]
+    NotOK(String),
+
+    #[error("internal channel error, relay connection might have closed")]
+    Channel,
 }
 
-pub type Result<T> = std::result::Result<T, RelayError>;
+#[derive(Error, Debug)]
+pub enum ConnectError {
+    #[error("relay connection error")]
+    Websocket,
+}
 
+#[derive(Debug)]
 pub(crate) struct SubSender {
     pub(crate) ocurrences_sender: mpsc::Sender<Occurrence>,
     pub(crate) filter: Filter,
     pub(crate) auth_automatically: Option<Finalizer>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Relay {
     pub url: Url,
     // by connection
@@ -55,17 +53,27 @@ pub struct Relay {
     id_skippers_map: Arc<Mutex<SecondaryMap<SubscriptionKey, Arc<DashSet<ID>>>>>,
 
     // by publish
-    ok_callbacks: Arc<DashMap<ID, oneshot::Sender<Result<()>>>>,
+    ok_callbacks: Arc<DashMap<ID, oneshot::Sender<Result<(), String>>>>,
 }
 
 impl Relay {
-    pub async fn connect(url: Url, mut on_close: Option<oneshot::Sender<String>>) -> Result<Self> {
+    pub async fn connect(
+        url: Url,
+        mut on_close: Option<oneshot::Sender<String>>,
+    ) -> Result<Self, ConnectError> {
         let (write_sender, mut write_receiver) = mpsc::channel(1);
 
         // connect
-        let (ws_stream, _) =
-            connect_async_tls_with_config(url.as_str().into_client_request()?, None, false, None)
-                .await?;
+        let (ws_stream, _) = connect_async_tls_with_config(
+            url.as_str()
+                .into_client_request()
+                .map_err(|_| ConnectError::Websocket)?,
+            None,
+            false,
+            None,
+        )
+        .await
+        .map_err(|_| ConnectError::Websocket)?;
         let (conn_write, mut conn_read) = ws_stream.split();
 
         let relay = Self {
@@ -219,7 +227,7 @@ impl Relay {
                         Some((_, sender)) => {
                             let _ = sender.send(match ok {
                                 true => Ok(()),
-                                false => Err(RelayError::OKFalseWithReason(reason)),
+                                false => Err(reason),
                             });
                         }
                         None => {
@@ -243,20 +251,16 @@ impl Relay {
                                 if let Some(challenge) = relay_challenge.read().await.clone() {
                                     if let Some(finalizer) = sub.auth_automatically.take() {
                                         // instead of ending here after a CLOSED we will perform AUTH
-                                        if let Ok(auth_event) =
-                                            finalizer.finalize_event(EventTemplate {
-                                                created_at: Timestamp::now(),
-                                                kind: Kind(22242),
-                                                content: "".to_string(),
-                                                tags: Tags(vec![
-                                                    vec![
-                                                        "relay".to_string(),
-                                                        relay_url.to_string(),
-                                                    ],
-                                                    vec!["challenge".to_string(), challenge],
-                                                ]),
-                                            })
-                                        {
+                                        let result = finalizer.finalize_event(EventTemplate {
+                                            created_at: Timestamp::now(),
+                                            kind: Kind(22242),
+                                            content: "".to_string(),
+                                            tags: Tags(vec![
+                                                vec!["relay".to_string(), relay_url.to_string()],
+                                                vec!["challenge".to_string(), challenge],
+                                            ]),
+                                        });
+                                        if let Ok(auth_event) = result.await {
                                             // send the AUTH message and wait for an OK
                                             let (tx, rx) = oneshot::channel();
                                             ok_callbacks.insert(auth_event.id.clone(), tx);
@@ -323,18 +327,22 @@ impl Relay {
         Ok(relay)
     }
 
-    pub async fn publish(&self, event: Event) -> Result<()> {
+    pub async fn publish(&self, event: Event) -> Result<(), PublishError> {
         let (tx, rx) = oneshot::channel();
         self.ok_callbacks.insert(event.id.clone(), tx);
 
         let msg = serde_json::json!(["EVENT", event]);
 
-        self.write_queue
+        let _ = self
+            .write_queue
             .send(msg.to_string())
-            .map_err(|err| RelayError::PublishSendError(self.url.clone(), err.0))
-            .await?;
+            .await
+            .map_err(|_| PublishError::Channel)?;
 
-        rx.await?
+        rx.await
+            .map_err(|_| PublishError::Channel)
+            .map(|r| r.map_err(|err| PublishError::NotOK(err)))
+            .flatten()
     }
 
     /// subscribe to events matching a filter
@@ -342,7 +350,7 @@ impl Relay {
         &self,
         filter: Filter,
         opts: SubscriptionOptions,
-    ) -> Result<mpsc::Receiver<Occurrence>> {
+    ) -> mpsc::Receiver<Occurrence> {
         let mut reqmsg = String::new();
         let mut closemsg = String::new();
         let (occurrences_sender, occurrences) = mpsc::channel::<Occurrence>(1);
@@ -388,7 +396,7 @@ impl Relay {
             })
             .await;
 
-        Ok(occurrences)
+        occurrences
     }
 
     pub async fn close(self) -> () {
@@ -427,8 +435,7 @@ mod tests {
 
         let mut sub = relay
             .subscribe(filter, SubscriptionOptions::default())
-            .await
-            .unwrap();
+            .await;
 
         let mut pre_eose_count = 0;
         while let Some(occ) = sub.recv().await {

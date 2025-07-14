@@ -3,7 +3,7 @@
 //! This module implements NIP-05 for verifying and querying Nostr identities
 //! using DNS-based identifiers.
 
-use crate::{ProfilePointer, PubKey};
+use crate::{keys, ProfilePointer, PubKey};
 use regex::Regex;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -14,16 +14,21 @@ use thiserror::Error;
 pub enum Nip05Error {
     #[error("invalid identifier")]
     InvalidIdentifier,
+
     #[error("missing domain")]
     MissingDomain,
+
     #[error("no entry for name '{0}'")]
     NoEntry(String),
+
     #[error("got an invalid public key '{0}'")]
     InvalidPublicKey(String),
+
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
+
     #[error("public key parsing error")]
-    PubKeyParsing(#[from] crate::PubKeyError),
+    PubKeyParsing(#[from] keys::PubKeyError),
 }
 
 pub type Result<T> = std::result::Result<T, Nip05Error>;

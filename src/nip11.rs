@@ -12,12 +12,12 @@ use thiserror::Error;
 pub enum Nip11Error {
     #[error("HTTP request failed: {0}")]
     Http(#[from] reqwest::Error),
+
     #[error("JSON parsing error: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("public key parsing error")]
-    PubKeyParsing(#[from] crate::PubKeyError),
+
     #[error("URL normalization error")]
-    UrlNormalization(#[from] Box<dyn std::error::Error + Send + Sync>),
+    Normalize(#[from] url::ParseError),
 }
 
 pub type Result<T> = std::result::Result<T, Nip11Error>;

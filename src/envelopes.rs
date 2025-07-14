@@ -8,21 +8,46 @@ use thiserror::Error;
 pub enum EnvelopeError {
     #[error("empty message")]
     EmptyMessage,
+
     #[error("invalid label")]
     InvalidLabel,
+
     #[error("invalid {0} envelope")]
     InvalidEnvelope(String),
+
     #[error("unknown envelope label: {0}")]
     UnknownLabel(String),
+
     #[error("JSON parsing error: {0}")]
     Json(#[from] serde_json::Error),
+
     #[error("hex decoding error")]
     Hex(#[from] lowercase_hex::FromHexError),
+
     #[error("ID parsing error")]
     IdParsing(#[from] crate::types::IDError),
-}
 
-pub type Result<T> = std::result::Result<T, EnvelopeError>;
+    #[error("invalid subscription ID")]
+    InvalidSubscriptionId,
+
+    #[error("REQ must have at least one filter")]
+    ReqNoFilter,
+
+    #[error("invalid count")]
+    InvalidCount,
+
+    #[error("invalid HLL length")]
+    InvalidHllLength,
+
+    #[error("invalid count value")]
+    InvalidCountValue,
+
+    #[error("invalid auth event kind")]
+    InvalidAuthEventKind,
+
+    #[error("invalid challenge")]
+    InvalidChallenge,
+}
 
 /// nostr message envelopes ("commands")
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -231,7 +256,11 @@ impl<'de> Deserialize<'de> for Envelope {
                             // 3-element array: ["EVENT", subscription_id, event]
                             let subscription_id = second_element
                                 .as_str()
-                                .ok_or_else(|| de::Error::custom("invalid subscription_id"))?
+                                .ok_or_else(|| {
+                                    de::Error::custom(
+                                        EnvelopeError::InvalidSubscriptionId.to_string(),
+                                    )
+                                })?
                                 .to_string();
                             let event: Event =
                                 serde_json::from_value(third_element).map_err(de::Error::custom)?;
@@ -259,7 +288,7 @@ impl<'de> Deserialize<'de> for Envelope {
                         }
 
                         if filters.is_empty() {
-                            return Err(de::Error::custom("REQ must have at least one filter"));
+                            return Err(de::Error::custom(EnvelopeError::ReqNoFilter.to_string()));
                         }
 
                         Ok(Envelope::Req {
@@ -285,15 +314,18 @@ impl<'de> Deserialize<'de> for Envelope {
                                 let mut hyperloglog = None;
 
                                 if let Some(count_val) = count_result.get("count") {
-                                    count = count_val
-                                        .as_i64()
-                                        .ok_or_else(|| de::Error::custom("invalid count value"))?
-                                        as u32;
+                                    count = count_val.as_i64().ok_or_else(|| {
+                                        de::Error::custom(
+                                            EnvelopeError::InvalidCountValue.to_string(),
+                                        )
+                                    })? as u32;
                                 }
                                 if let Some(hll) = count_result.get("hll") {
                                     if let Some(hll_str) = hll.as_str() {
                                         if hll_str.len() != 512 {
-                                            return Err(de::Error::custom("invalid hll length"));
+                                            return Err(de::Error::custom(
+                                                EnvelopeError::InvalidHllLength.to_string(),
+                                            ));
                                         }
                                         hyperloglog = lowercase_hex::decode(hll_str).ok();
                                     }
@@ -315,7 +347,9 @@ impl<'de> Deserialize<'de> for Envelope {
                                         filter,
                                     })
                                 } else {
-                                    return Err(de::Error::custom("invalid count"));
+                                    return Err(de::Error::custom(
+                                        EnvelopeError::InvalidCount.to_string(),
+                                    ));
                                 }
                             }
                         }
@@ -379,12 +413,16 @@ impl<'de> Deserialize<'de> for Envelope {
                             if event.kind == Kind(22242) {
                                 Ok(Envelope::AuthEvent { event })
                             } else {
-                                Err(de::Error::custom("invalid auth event kind"))
+                                Err(de::Error::custom(
+                                    EnvelopeError::InvalidAuthEventKind.to_string(),
+                                ))
                             }
                         } else {
                             let challenge = second_element
                                 .as_str()
-                                .ok_or_else(|| de::Error::custom("invalid challenge"))?
+                                .ok_or_else(|| {
+                                    de::Error::custom(EnvelopeError::InvalidChallenge.to_string())
+                                })?
                                 .to_string();
                             Ok(Envelope::AuthChallenge { challenge })
                         }

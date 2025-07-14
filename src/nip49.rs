@@ -14,44 +14,6 @@ use secp256k1::rand::TryRngCore;
 use thiserror::Error;
 use unicode_normalization::UnicodeNormalization;
 
-#[derive(Error, Debug)]
-pub enum Nip49Error {
-    #[error("bech32 encoding/decoding error")]
-    Bech32(#[from] bech32::DecodeError),
-
-    #[error("expected prefix ncryptsec")]
-    InvalidPrefix,
-
-    #[error("invalid data length")]
-    InvalidDataLength,
-
-    #[error("expected version 0x02, got {0:#x}")]
-    InvalidVersion(u8),
-
-    #[error("encryption failed: {0}")]
-    EncryptionFailed(String),
-
-    #[error("decryption failed: {0}")]
-    DecryptionFailed(String),
-
-    #[error("invalid decrypted key length")]
-    InvalidKeyLength,
-
-    #[error("scrypt parameter error")]
-    ScryptParams(#[from] scrypt::errors::InvalidParams),
-
-    #[error("scrypt operation error")]
-    ScryptOperation(#[from] scrypt::errors::InvalidOutputLen),
-
-    #[error("invalid key length for cipher")]
-    InvalidCipherKeyLength,
-
-    #[error("encrypted key is not valid")]
-    InvalidSecretKey(#[from] keys::SecretKeyError),
-}
-
-pub type Result<T> = std::result::Result<T, Nip49Error>;
-
 /// key security byte values
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeySecurityByte {
@@ -76,23 +38,34 @@ impl From<KeySecurityByte> for u8 {
     }
 }
 
+#[derive(Error, Debug)]
+pub enum EncryptError {
+    #[error("invalid key length for cipher")]
+    InvalidCipherKeyLength,
+
+    #[error("scrypt operation failed: {0}")]
+    ScryptOperation(#[from] ScryptDerivationError),
+
+    #[error("encryption failed: {0}")]
+    EncryptionFailed(String),
+}
+
 /// encrypt a secret key with a password
 pub fn encrypt(
     secret_key: &SecretKey,
     password: &str,
-    logn: u8,
+    log_n: u8,
     ksb: KeySecurityByte,
-) -> Result<String> {
+) -> Result<String, EncryptError> {
     let mut rng = secp256k1::rand::rng();
     let mut salt = [0u8; 16];
     rng.try_fill_bytes(&mut salt).expect("infallible");
 
-    let n = 1u32 << logn;
-    let key = get_key(password, &salt, n)?;
+    let key = derive_scrypted_key(password, &salt, log_n)?;
 
     let mut concat = vec![0u8; 91];
     concat[0] = 0x02; // version
-    concat[1] = logn;
+    concat[1] = log_n;
     concat[2..2 + 16].copy_from_slice(&salt);
 
     let mut nonce = [0u8; 24];
@@ -104,8 +77,8 @@ pub fn encrypt(
     let ad = [ksb.into()];
     concat[2 + 16 + 24] = ad[0];
 
-    let cipher =
-        XChaCha20Poly1305::new_from_slice(&key).map_err(|_| Nip49Error::InvalidCipherKeyLength)?;
+    let cipher = XChaCha20Poly1305::new_from_slice(&key)
+        .map_err(|_| EncryptError::InvalidCipherKeyLength)?;
     let xnonce = XNonce::from_slice(&nonce);
     let ciphertext = cipher
         .encrypt(
@@ -115,7 +88,7 @@ pub fn encrypt(
                 aad: &ad,
             },
         )
-        .map_err(|err| Nip49Error::EncryptionFailed(err.to_string()))?;
+        .map_err(|err| EncryptError::EncryptionFailed(err.to_string()))?;
 
     concat[2 + 16 + 24 + 1..].copy_from_slice(&ciphertext);
 
@@ -124,34 +97,59 @@ pub fn encrypt(
     Ok(encoded)
 }
 
+#[derive(Error, Debug)]
+pub enum DecryptError {
+    #[error("failed to decode bech32")]
+    Bech32(#[from] bech32::DecodeError),
+
+    #[error("scrypt operation failed: {0}")]
+    ScryptOperation(#[from] ScryptDerivationError),
+
+    #[error("invalid human-readable prefix")]
+    InvalidPrefix,
+
+    #[error("invalid data length: {0}, expected 91")]
+    InvalidDataLength(usize),
+
+    #[error("invalid version byte")]
+    InvalidVersion,
+
+    #[error("failed to decrypt")]
+    ChaCha20Error,
+
+    #[error("decrypted key has unexpected size: {0}")]
+    InvalidKeyLength(usize),
+
+    #[error("decrypted key does not belong to field")]
+    InvaidSecretKey(#[from] keys::SecretKeyError),
+}
+
 /// decrypt to raw bytes
-pub fn decrypt(bech32_string: &str, password: &str) -> Result<SecretKey> {
+pub fn decrypt(bech32_string: &str, password: &str) -> Result<SecretKey, DecryptError> {
     let (hrp, data) = bech32::decode(bech32_string)?;
 
     if hrp.as_str() != "ncryptsec" {
-        return Err(Nip49Error::InvalidPrefix);
+        return Err(DecryptError::InvalidPrefix);
     }
 
     if data.len() < 91 {
-        return Err(Nip49Error::InvalidDataLength);
+        return Err(DecryptError::InvalidDataLength(data.len()));
     }
 
     let version = data[0];
     if version != 0x02 {
-        return Err(Nip49Error::InvalidVersion(version));
+        return Err(DecryptError::InvalidVersion);
     }
 
-    let logn = data[1];
-    let n = 1u32 << logn;
+    let log_n = data[1];
     let salt = &data[2..2 + 16];
     let nonce = &data[2 + 16..2 + 16 + 24];
     let ad = &data[2 + 16 + 24..2 + 16 + 24 + 1];
     let encrypted_key = &data[2 + 16 + 24 + 1..];
 
-    let key = get_key(password, salt, n)?;
+    let key = derive_scrypted_key(password, salt, log_n)?;
 
-    let cipher =
-        XChaCha20Poly1305::new_from_slice(&key).map_err(|_| Nip49Error::InvalidCipherKeyLength)?;
+    let cipher = XChaCha20Poly1305::new(&key.into());
     let xnonce = XNonce::from_slice(nonce);
     let decrypted = cipher
         .decrypt(
@@ -161,27 +159,41 @@ pub fn decrypt(bech32_string: &str, password: &str) -> Result<SecretKey> {
                 aad: ad,
             },
         )
-        .map_err(|err| Nip49Error::DecryptionFailed(err.to_string()))?;
+        .map_err(|_| DecryptError::ChaCha20Error)?;
 
     if decrypted.len() != 32 {
-        return Err(Nip49Error::InvalidKeyLength);
+        return Err(DecryptError::InvalidKeyLength(decrypted.len()));
     }
 
     Ok(SecretKey::from_bytes(decrypted.try_into().unwrap())?)
 }
 
-fn get_key(password: &str, salt: &[u8], n: u32) -> Result<Vec<u8>> {
+#[derive(Error, Debug)]
+pub enum ScryptDerivationError {
+    #[error("invalid log_n value given to scrypt: {0}")]
+    InvalidLogN(u8),
+
+    #[error("scrypt operation error")]
+    ScryptOperation(#[from] scrypt::errors::InvalidOutputLen),
+}
+
+pub fn derive_scrypted_key(
+    password: &str,
+    salt: &[u8],
+    log_n: u8,
+) -> Result<[u8; 32], ScryptDerivationError> {
     // normalize password using NFKC
     let normalized_password: String = password.nfkc().collect();
 
     let params = Params::new(
-        (n as f64).log2() as u8,
-        8,  // r
-        1,  // p
-        32, // output length
-    )?;
+        log_n, // log_n (not N)
+        8,     // r
+        1,     // p
+        32,    // output length
+    )
+    .map_err(|_| ScryptDerivationError::InvalidLogN(log_n))?;
 
-    let mut key = vec![0u8; 32];
+    let mut key = [0u8; 32];
     scrypt(normalized_password.as_bytes(), salt, &params, &mut key)?;
 
     Ok(key)
@@ -252,26 +264,26 @@ mod tests {
     #[test]
     fn test_normalization() {
         let nonce = [1u8; 16];
-        let n = 8;
+        let log_n = 8;
 
         // different Unicode representations of the same string
-        let key1 = get_key(
+        let key1 = derive_scrypted_key(
             &String::from_utf8(vec![
                 0xE2, 0x84, 0xAB, 0xE2, 0x84, 0xA6, 0xE1, 0xBA, 0x9B, 0xCC, 0xA3,
             ])
             .unwrap(),
             &nonce,
-            n,
+            log_n,
         )
         .unwrap();
-        let key2 = get_key(
+        let key2 = derive_scrypted_key(
             &String::from_utf8(vec![0xC3, 0x85, 0xCE, 0xA9, 0xE1, 0xB9, 0xA9]).unwrap(),
             &nonce,
-            n,
+            log_n,
         )
         .unwrap();
-        let key3 = get_key("ÅΩẛ̣", &nonce, n).unwrap();
-        let key4 = get_key("ÅΩẛ̣", &nonce, n).unwrap();
+        let key3 = derive_scrypted_key("ÅΩẛ̣", &nonce, log_n).unwrap();
+        let key4 = derive_scrypted_key("ÅΩẛ̣", &nonce, log_n).unwrap();
 
         assert_eq!(key1, key2, "normalization failed");
         assert_eq!(key2, key3, "normalization failed");

@@ -9,18 +9,25 @@ use thiserror::Error;
 pub enum SecretKeyError {
     #[error("secret key should be at most 64-char hex, got '{0}'")]
     InvalidLength(String),
+
     #[error("invalid hex encoding")]
     InvalidHex(#[from] lowercase_hex::FromHexError),
+
     #[error("invalid secret key")]
     InvalidSecretKey,
+
+    #[error("public key error: {0}")]
+    PubKey(#[from] PubKeyError),
 }
 
 #[derive(Error, Debug)]
 pub enum PubKeyError {
     #[error("invalid hex encoding")]
     InvalidHex(#[from] lowercase_hex::FromHexError),
+
     #[error("invalid public key length: expected 32 bytes, got {0}")]
     InvalidLength(usize),
+
     #[error("public key not in curve")]
     InvalidPublicKey,
 }
@@ -78,15 +85,15 @@ impl SecretKey {
 
     /// get the public key for this secret key
     pub fn public_key(&self) -> PubKey {
-        let secret_key = Secp256k1SecretKey::from_byte_array(self.0).expect("valid secret key");
+        let secret_key = Secp256k1SecretKey::from_byte_array(self.0).unwrap();
         let keypair = Keypair::from_secret_key(SECP256K1, &secret_key);
         let (xonly_pk, _) = XOnlyPublicKey::from_keypair(&keypair);
-        PubKey::from_bytes(xonly_pk.serialize())
-            .expect("this works because we checked the secret key first")
+        PubKey::from_bytes_unchecked(xonly_pk.serialize())
     }
 
     pub fn to_ecdsa_key(&self) -> secp256k1::SecretKey {
-        secp256k1::SecretKey::from_byte_array(self.0).expect("we know the buffer is valid")
+        secp256k1::SecretKey::from_byte_array(self.0)
+            .expect("should always work as secret keys are pre-validated")
     }
 }
 
@@ -101,6 +108,11 @@ impl fmt::Display for SecretKey {
 pub struct PubKey(pub [u8; 32]);
 
 impl PubKey {
+    // this one if for when we know we're getting good input from libsecp256k1
+    fn from_bytes_unchecked(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
     pub fn from_bytes(bytes: [u8; 32]) -> Result<Self, PubKeyError> {
         // ensure the public key is valid
         let _ = secp256k1::XOnlyPublicKey::from_byte_array(bytes)
@@ -142,7 +154,8 @@ impl PubKey {
         buf[0] = 2;
         buf[1..].clone_from_slice(&self.0);
 
-        secp256k1::PublicKey::from_byte_array_compressed(buf).expect("we know the buffer is valid")
+        secp256k1::PublicKey::from_byte_array_compressed(buf)
+            .expect("should always work as pubkeys are always pre-validated")
     }
 }
 

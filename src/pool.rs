@@ -1,16 +1,29 @@
 use crate::{
     normalize_url,
-    relay::{Occurrence, Relay, SubscriptionOptions},
-    Event, Filter, Result,
+    relay::{self, Occurrence, Relay, SubscriptionOptions},
+    Event, Filter,
 };
 use dashmap::{DashMap, DashSet};
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
 };
+use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 
-/// pool manages connections to multiple relays
+#[derive(Error, Debug)]
+pub enum EnsureError {
+    #[error("in penalty box, {0}s remaining")]
+    PenaltyBox(u32),
+
+    #[error("URL normalization error")]
+    Normalize(#[from] url::ParseError),
+
+    #[error("failed to connect: {0}")]
+    Connect(#[from] relay::ConnectError),
+}
+
+#[derive(Debug)]
 pub struct Pool {
     relays: Arc<DashMap<String, Relay>>,
     penalty_box: Option<Arc<DashMap<String, (u16, u32)>>>, // (failures, remaining_seconds)
@@ -46,7 +59,7 @@ impl Pool {
     }
 
     /// get or create a relay connection to the given url
-    pub async fn ensure_relay(&self, url: &str) -> Result<Relay> {
+    pub async fn ensure_relay(&self, url: &str) -> Result<Relay, EnsureError> {
         let normalized_url = normalize_url(url)?;
 
         // check penalty box
@@ -54,7 +67,7 @@ impl Pool {
             if let Some(pb) = penalty_box.get(normalized_url.as_str()) {
                 let (_, remaining) = *pb;
                 if remaining > 0 {
-                    return Err(format!("in penalty box, {}s remaining", remaining).into());
+                    return Err(EnsureError::PenaltyBox(remaining));
                 }
             }
         }
@@ -102,7 +115,7 @@ impl Pool {
                     let new_penalty = 30 + 2u32.pow(failures as u32 + 1);
                     penalty_box.insert(normalized_url.to_string(), (failures + 1, new_penalty));
                 }
-                Err(format!("failed to connect: {}", err).into())
+                Err(EnsureError::Connect(err))
             }
         }
     }
@@ -154,15 +167,14 @@ impl Pool {
     ) -> Vec<Event> {
         let mut events = Vec::with_capacity(filter.limit.unwrap_or(500) * urls.len() / 2);
 
-        if let Ok(mut occurrences) = self.subscribe(urls, filter, subscription_options).await {
-            while let Some(occ) = occurrences.recv().await {
-                match occ {
-                    Occurrence::Event(event) => {
-                        events.push(event);
-                    }
-                    _ => {
-                        break;
-                    }
+        let mut occurrences = self.subscribe(urls, filter, subscription_options).await;
+        while let Some(occ) = occurrences.recv().await {
+            match occ {
+                Occurrence::Event(event) => {
+                    events.push(event);
+                }
+                _ => {
+                    break;
                 }
             }
         }
@@ -177,7 +189,7 @@ impl Pool {
         urls: Vec<String>,
         filter: Filter,
         subscription_options: SubscriptionOptions,
-    ) -> Result<mpsc::Receiver<Occurrence>> {
+    ) -> mpsc::Receiver<Occurrence> {
         let (tx, rx) = mpsc::channel(256);
         let skip_ids = Arc::new(DashSet::new());
         let eose_counter = Arc::new(AtomicUsize::new(urls.len()));
@@ -198,27 +210,26 @@ impl Pool {
 
             tokio::spawn(async move {
                 if let Ok(relay) = pool.ensure_relay(&url).await {
-                    if let Ok(mut sub) = relay.subscribe(filter, opts).await {
-                        while let Some(occ) = sub.recv().await {
-                            match occ {
-                                Occurrence::Event(event) => {
-                                    if tx.send(Occurrence::Event(event)).await.is_err() {
-                                        // receiver dropped
-                                        return;
-                                    }
+                    let mut sub = relay.subscribe(filter, opts).await;
+                    while let Some(occ) = sub.recv().await {
+                        match occ {
+                            Occurrence::Event(event) => {
+                                if tx.send(Occurrence::Event(event)).await.is_err() {
+                                    // receiver dropped
+                                    return;
                                 }
-                                Occurrence::EOSE => {
-                                    if eose_counter.fetch_sub(1, Ordering::SeqCst) == 1 {
-                                        if !eosed.swap(true, Ordering::SeqCst) {
-                                            if tx.send(Occurrence::EOSE).await.is_err() {
-                                                // receiver dropped
-                                                return;
-                                            }
+                            }
+                            Occurrence::EOSE => {
+                                if eose_counter.fetch_sub(1, Ordering::SeqCst) == 1 {
+                                    if !eosed.swap(true, Ordering::SeqCst) {
+                                        if tx.send(Occurrence::EOSE).await.is_err() {
+                                            // receiver dropped
+                                            return;
                                         }
                                     }
                                 }
-                                Occurrence::Close(_) => break,
                             }
+                            Occurrence::Close(_) => break,
                         }
                     }
                 }
@@ -247,7 +258,7 @@ impl Pool {
         }
 
         drop(tx);
-        Ok(rx)
+        rx
     }
 
     /// close the pool

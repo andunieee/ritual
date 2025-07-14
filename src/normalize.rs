@@ -1,9 +1,7 @@
 use url::Url;
 
-use crate::Result;
-
 /// normalize a URL and replace http://, https:// schemes with ws://, wss://
-pub fn normalize_url(url_str: &str) -> Result<Url> {
+pub fn normalize_url(url_str: &str) -> Result<Url, url::ParseError> {
     let url_str = match url_str.split_once("://") {
         Some((scheme, _))
             if scheme == "wss" || scheme == "ws" || scheme == "WSS" || scheme == "WS" =>

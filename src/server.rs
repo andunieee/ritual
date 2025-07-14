@@ -34,8 +34,6 @@ pub enum RelayError {
     CustomRelay(String),
 }
 
-pub type Result<T> = std::result::Result<T, RelayError>;
-
 /// trait for custom relay implementations
 pub trait CustomRelay: Send + Sync {
     fn handle_event(&mut self, _event: &Event) -> std::result::Result<(), String> {
@@ -55,15 +53,39 @@ pub struct RelayInternals {
     pub custom_relay: Box<Mutex<dyn CustomRelay>>,
 }
 
+#[derive(Error, Debug)]
+pub enum StartError {
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("hyper error: {0}")]
+    Hyper(#[from] hyper::Error),
+}
+
+#[derive(Error, Debug)]
+pub enum ServiceError {
+    #[error("websocket error")]
+    WebSocket,
+
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+
+    #[error("custom relay error: {0}")]
+    CustomRelay(String),
+
+    #[error("hyper error: {0}")]
+    Hyper(#[from] hyper::Error),
+}
+
 /// start the relay server
-pub async fn start(ri: Arc<RelayInternals>, addr: SocketAddr) -> Result<()> {
+pub async fn start(ri: Arc<RelayInternals>, addr: SocketAddr) -> Result<(), StartError> {
     let listener = TcpListener::bind(addr).await?;
     println!("relay listening on {}", addr);
 
     async fn service(
         req: Request<Incoming>,
         ri: Arc<RelayInternals>,
-    ) -> std::result::Result<Response<Full<Bytes>>, String> {
+    ) -> std::result::Result<Response<Full<Bytes>>, ServiceError> {
         match (req.method(), req.uri().path()) {
             (&Method::GET, "/") => {
                 // check if this is a websocket upgrade request
@@ -89,7 +111,7 @@ pub async fn start(ri: Arc<RelayInternals>, addr: SocketAddr) -> Result<()> {
                                                                 subscription_id,
                                                                 filters,
                                                             }) => {
-                                                                handle_req_envelope(
+                                                                let _ = handle_req_envelope(
                                                                     &ri,
                                                                     tx.clone(),
                                                                     subscription_id,
@@ -104,7 +126,7 @@ pub async fn start(ri: Arc<RelayInternals>, addr: SocketAddr) -> Result<()> {
                                                             //     .await;
                                                             // }
                                                             Ok(Envelope::OutEvent { event }) => {
-                                                                handle_event_envelope(
+                                                                let _ = handle_event_envelope(
                                                                     &ri,
                                                                     tx.clone(),
                                                                     &event,
@@ -144,16 +166,13 @@ pub async fn start(ri: Arc<RelayInternals>, addr: SocketAddr) -> Result<()> {
                                 }
                             });
 
-                            Ok::<hyper::Response<http_body_util::Full<bytes::Bytes>>, String>(
+                            Ok::<hyper::Response<http_body_util::Full<bytes::Bytes>>, ServiceError>(
                                 response,
                             )
                         }
                         Err(e) => {
                             println!("websocket upgrade error: {}", e);
-                            Ok(Response::builder()
-                                .status(StatusCode::BAD_REQUEST)
-                                .body(Full::new(Bytes::from("websocket upgrade failed")))
-                                .unwrap())
+                            Err(ServiceError::WebSocket)
                         }
                     }
                 } else {
@@ -162,7 +181,7 @@ pub async fn start(ri: Arc<RelayInternals>, addr: SocketAddr) -> Result<()> {
                         if accept == "application/nostr+json" {
                             let info_json = match serde_json::to_string(&ri.info) {
                                 Ok(json) => json,
-                                Err(_) => "{}".to_string(),
+                                Err(e) => return Err(ServiceError::Json(e)),
                             };
                             return Ok(Response::builder()
                                 .status(StatusCode::OK)
@@ -208,93 +227,113 @@ pub async fn start(ri: Arc<RelayInternals>, addr: SocketAddr) -> Result<()> {
     }
 }
 
+#[derive(Error, Debug)]
+pub enum HandleReqEnvelopeError {
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+
+    #[error("websocket error: {0}")]
+    WebSocket(#[from] hyper_tungstenite::tungstenite::Error),
+
+    #[error("custom relay error: {0}")]
+    CustomRelay(String),
+}
+
 async fn handle_req_envelope(
     ri: &Arc<RelayInternals>,
     tx: Arc<Mutex<SplitSink<WebSocketStream<TokioIo<Upgraded>>, Message>>>,
     subscription_id: String,
     filters: Vec<Filter>,
-) {
+) -> Result<(), HandleReqEnvelopeError> {
     for filter in filters {
         // query events
         match ri.custom_relay.lock().await.handle_request(&filter) {
             Ok(events) => {
                 for event in events {
                     let event_env = serde_json::json!(["EVENT", subscription_id, event]);
-                    let _ = tx
-                        .lock()
+                    tx.lock()
                         .await
                         .send(Message::text(event_env.to_string()))
-                        .await;
+                        .await?;
                 }
             }
             Err(e) => {
                 let notice = serde_json::json!(["NOTICE", format!("query error: {}", e)]);
-                let _ = tx
-                    .lock()
+                tx.lock()
                     .await
                     .send(Message::text(notice.to_string()))
-                    .await;
+                    .await?;
             }
         }
     }
 
     // send EOSE
     let eose_json = serde_json::json!(["EOSE", subscription_id]);
-    let _ = tx
-        .lock()
+    tx.lock()
         .await
         .send(Message::text(eose_json.to_string()))
-        .await;
+        .await?;
+
+    Ok(())
+}
+
+#[derive(Error, Debug)]
+pub enum HandleEventEnvelopeError {
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+
+    #[error("websocket error: {0}")]
+    WebSocket(#[from] hyper_tungstenite::tungstenite::Error),
+
+    #[error("custom relay error: {0}")]
+    CustomRelay(String),
 }
 
 async fn handle_event_envelope(
     ri: &Arc<RelayInternals>,
     tx: Arc<Mutex<SplitSink<WebSocketStream<TokioIo<Upgraded>>, Message>>>,
     event: &Event,
-) {
+) -> Result<(), HandleEventEnvelopeError> {
     // check event ID
     if !event.check_id() {
         let ok_json =
             serde_json::json!(["OK", event.id, false, "invalid: id is computed incorrectly"]);
-        let _ = tx
-            .lock()
+        tx.lock()
             .await
             .send(Message::text(ok_json.to_string()))
-            .await;
-        return;
+            .await?;
+        return Ok(());
     }
 
     // check signature
     if !event.verify_signature() {
         let ok_json = serde_json::json!(["OK", event.id, false, "invalid: signature is invalid"]);
-        let _ = tx
-            .lock()
+        tx.lock()
             .await
             .send(Message::text(ok_json.to_string()))
-            .await;
-        return;
+            .await?;
+        return Ok(());
     }
 
     // possibly save event
     match ri.custom_relay.lock().await.handle_event(&event) {
         Ok(()) => {
             let ok_json = serde_json::json!(["OK", event.id, true, ""]);
-            let _ = tx
-                .lock()
+            tx.lock()
                 .await
                 .send(Message::text(ok_json.to_string()))
-                .await;
+                .await?;
         }
         Err(e) => {
             let ok_json =
                 serde_json::json!(["OK", event.id, false, normalize_ok_message(&e, "error")]);
-            let _ = tx
-                .lock()
+            tx.lock()
                 .await
                 .send(Message::text(ok_json.to_string()))
-                .await;
+                .await?;
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -488,7 +527,7 @@ mod tests {
             tags: crate::Tags::default(),
             content: "hello from test".to_string(),
         };
-        let event = event_template.finalize(&secret_key).unwrap();
+        let event = event_template.finalize(&secret_key);
         let event_id = event.id;
 
         // publish the event
@@ -503,8 +542,7 @@ mod tests {
 
         let mut subscription = relay
             .subscribe(filter, crate::relay::SubscriptionOptions::default())
-            .await
-            .unwrap();
+            .await;
 
         // wait for the event to be received
         let mut received_event = None;
@@ -608,7 +646,7 @@ mod tests {
                 tags: crate::Tags::default(),
                 content: format!("event with timestamp {}", i),
             };
-            let event = event_template.finalize(&secret_key).unwrap();
+            let event = event_template.finalize(&secret_key);
             events.push(event);
         }
 
