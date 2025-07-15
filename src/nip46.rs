@@ -1,15 +1,15 @@
 use std::fmt::Debug;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::SecretKey;
 use crate::{keys, nip44, pool::Pool, Event, EventTemplate, Filter, Kind, PubKey, Tags, Timestamp};
-use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use slotmap::{new_key_type, Key, KeyData, SecondaryMap, SlotMap};
 use thiserror::Error;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, Mutex};
 use url::Url;
 use velcro::hash_map;
 
@@ -89,10 +89,12 @@ pub enum FinalizeError {
     RPC(#[from] RPCError),
 }
 
+new_key_type! { struct RequestKey ; }
+
 #[derive(Clone, Debug)]
 pub struct BunkerClient
 where
-    Self: Send,
+    Self: Send + Sync,
 {
     serial: Arc<AtomicU64>,
     client_secret_key: SecretKey,
@@ -100,8 +102,8 @@ where
     target: PubKey,
     relays: Vec<String>,
     conversation_key: [u8; 32],
-    listeners: Arc<DashMap<String, oneshot::Sender<Response>>>,
-    expecting_auth: Arc<DashMap<String, ()>>,
+    awaiting_responses: Arc<Mutex<SlotMap<RequestKey, oneshot::Sender<Response>>>>,
+    expecting_auth: Arc<Mutex<SecondaryMap<RequestKey, ()>>>,
     on_auth_url: Arc<Option<AuthURLHandler>>,
 
     // memoized
@@ -126,13 +128,17 @@ impl BunkerClient {
             target: target_pubkey,
             relays,
             conversation_key,
-            listeners: Arc::new(DashMap::new()),
-            expecting_auth: Arc::new(DashMap::new()),
+            awaiting_responses: Arc::new(Mutex::new(SlotMap::with_capacity_and_key(10))),
+            expecting_auth: Arc::new(Mutex::new(SecondaryMap::with_capacity(10))),
             on_auth_url: Arc::new(on_auth_url),
             get_pubkey_response: Arc::new(tokio::sync::Mutex::new(None)),
         };
 
-        let bunker_clone = bunker.clone();
+        let pool = bunker.pool.clone();
+        let relays = bunker.relays.clone();
+        let on_auth_url = bunker.on_auth_url.clone();
+        let expecting_auth = bunker.expecting_auth.clone();
+        let awaiting_responses = bunker.awaiting_responses.clone();
         tokio::spawn(async move {
             let filter = Filter {
                 kinds: Some(vec![Kind(24133)]),
@@ -141,13 +147,16 @@ impl BunkerClient {
                 ..Default::default()
             };
 
-            for url in bunker_clone.relays.iter() {
-                let bunker_clone_2 = bunker_clone.clone();
+            for url in relays.iter() {
                 let url = url.clone();
                 let filter = filter.clone();
 
+                let pool = pool.clone();
+                let on_auth_url = on_auth_url.clone();
+                let expecting_auth = expecting_auth.clone();
+                let awaiting_responses = awaiting_responses.clone();
                 tokio::spawn(async move {
-                    if let Ok(relay) = bunker_clone_2.pool.ensure_relay(&url).await {
+                    if let Ok(relay) = pool.ensure_relay(&url).await {
                         let mut sub = relay.subscribe(filter, Default::default()).await;
                         while let Some(occ) = sub.recv().await {
                             if let crate::relay::Occurrence::Event(event) = occ {
@@ -155,20 +164,23 @@ impl BunkerClient {
                                     continue;
                                 }
 
-                                if let Ok(plain) =
-                                    nip44::decrypt(&event.content, &bunker_clone_2.conversation_key)
+                                if let Ok(plain) = nip44::decrypt(&event.content, &conversation_key)
                                 {
                                     if let Ok(resp) = serde_json::from_str::<Response>(&plain) {
+                                        let rk = match lowercase_hex::decode_to_array::<&str, 8>(
+                                            &resp.id,
+                                        ) {
+                                            Ok(bytes) => RequestKey(KeyData::from_ffi(
+                                                u64::from_be_bytes(bytes),
+                                            )),
+                                            Err(_) => continue,
+                                        };
+
                                         if resp.result.as_deref() == Some("auth_url") {
                                             if let Some(auth_url) = resp.error {
-                                                if bunker_clone_2
-                                                    .expecting_auth
-                                                    .remove(&resp.id)
-                                                    .is_some()
+                                                if expecting_auth.lock().await.remove(rk).is_some()
                                                 {
-                                                    if let Some(on_auth_fn) =
-                                                        bunker_clone_2.on_auth_url.as_ref()
-                                                    {
+                                                    if let Some(on_auth_fn) = on_auth_url.as_ref() {
                                                         on_auth_fn.0(auth_url);
                                                     }
                                                 }
@@ -176,8 +188,8 @@ impl BunkerClient {
                                             continue;
                                         }
 
-                                        if let Some((_, dispatcher)) =
-                                            bunker_clone_2.listeners.remove(&resp.id)
+                                        if let Some(dispatcher) =
+                                            awaiting_responses.lock().await.remove(rk)
                                         {
                                             let _ = dispatcher.send(resp);
                                         }
@@ -253,14 +265,7 @@ impl BunkerClient {
         &self,
         event_template: EventTemplate,
     ) -> Result<Event, FinalizeError> {
-        let event_json = json!({
-            "created_at": event_template.created_at,
-            "kind": event_template.kind,
-            "tags": event_template.tags,
-            "content": event_template.content,
-        })
-        .to_string();
-
+        let event_json = json!(event_template).to_string();
         let resp = self.rpc("sign_event", vec![event_json], true).await?;
         let event: Event = serde_json::from_str(&resp).map_err(|_| FinalizeError::InvalidEvent)?;
 
@@ -329,9 +334,12 @@ impl BunkerClient {
         params: Vec<String>,
         expect_auth: bool,
     ) -> Result<String, RPCError> {
-        let id = format!("{}", self.serial.fetch_add(1, Ordering::SeqCst));
+        // prepare response listener
+        let (tx, rx) = oneshot::channel::<Response>();
+        let rk = self.awaiting_responses.lock().await.insert(tx);
+
         let req = Request {
-            id: id.clone(),
+            id: lowercase_hex::encode(rk.data().as_ffi().to_le_bytes()),
             method,
             params,
         };
@@ -348,10 +356,8 @@ impl BunkerClient {
         }
         .finalize(&self.client_secret_key);
 
-        let (tx, rx) = oneshot::channel::<Response>();
-        self.listeners.insert(id.clone(), tx);
         if expect_auth {
-            self.expecting_auth.insert(id.clone(), ());
+            self.expecting_auth.lock().await.insert(rk, ());
         }
 
         // publish
@@ -377,12 +383,14 @@ impl BunkerClient {
                     Ok(resp.result.unwrap_or_default())
                 }
             }
-            Ok(Err(_)) => Err(RPCError::NoResponse),
+            Ok(Err(_)) => {
+                self.awaiting_responses.lock().await.remove(rk);
+                self.expecting_auth.lock().await.remove(rk);
+                Err(RPCError::NoResponse)
+            }
             Err(_) => {
-                self.listeners.remove(&id);
-                if expect_auth {
-                    self.expecting_auth.remove(&id);
-                }
+                self.awaiting_responses.lock().await.remove(rk);
+                self.expecting_auth.lock().await.remove(rk);
                 Err(RPCError::Timeout)
             }
         }

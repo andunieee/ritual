@@ -1,10 +1,11 @@
 use crate::{Event, Kind, PubKey, SecretKey, Signature, Tags, Timestamp, ID};
 use secp256k1::{Keypair, SECP256K1};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 
 /// represents an unsigned nostr event
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EventTemplate {
     pub created_at: Timestamp,
     pub kind: Kind,
