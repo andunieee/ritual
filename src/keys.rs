@@ -29,7 +29,7 @@ pub enum PubKeyError {
     InvalidLength(usize),
 
     #[error("public key not in curve")]
-    InvalidPublicKey,
+    NotInCurve,
 }
 
 /// A 32-byte secret key
@@ -84,7 +84,7 @@ impl SecretKey {
     }
 
     /// get the public key for this secret key
-    pub fn public_key(&self) -> PubKey {
+    pub fn pubkey(&self) -> PubKey {
         let secret_key = Secp256k1SecretKey::from_byte_array(self.0).unwrap();
         let keypair = Keypair::from_secret_key(SECP256K1, &secret_key);
         let (xonly_pk, _) = XOnlyPublicKey::from_keypair(&keypair);
@@ -116,7 +116,7 @@ impl PubKey {
     pub fn from_bytes(bytes: [u8; 32]) -> Result<Self, PubKeyError> {
         // ensure the public key is valid
         let _ = secp256k1::XOnlyPublicKey::from_byte_array(bytes)
-            .map_err(|_| PubKeyError::InvalidPublicKey)?;
+            .map_err(|_| PubKeyError::NotInCurve)?;
 
         Ok(Self(bytes))
     }
@@ -139,7 +139,7 @@ impl PubKey {
 
         // ensure the public key is valid
         let _ = secp256k1::XOnlyPublicKey::from_byte_array(bytes)
-            .map_err(|_| PubKeyError::InvalidPublicKey)?;
+            .map_err(|_| PubKeyError::NotInCurve)?;
 
         Ok(Self(bytes))
     }

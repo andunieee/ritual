@@ -8,7 +8,7 @@ use crate::{helpers::is_valid_relay_url, Event, Filter, Kind, PubKey, Tag, ID};
 pub enum Pointer {
     Profile(ProfilePointer),
     Event(EventPointer),
-    Entity(EntityPointer),
+    Address(AddressPointer),
 }
 
 #[derive(Error, Debug)]
@@ -23,7 +23,7 @@ pub enum Error {
 /// Pointer to a Nostr profile
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfilePointer {
-    pub public_key: PubKey,
+    pub pubkey: PubKey,
     pub relays: Vec<String>,
 }
 
@@ -34,14 +34,14 @@ impl ProfilePointer {
             return Err(Error::ShortTag);
         }
 
-        let public_key = PubKey::from_hex(&tag[1]).map_err(|_| Error::Invalid)?;
+        let pubkey = PubKey::from_hex(&tag[1]).map_err(|_| Error::Invalid)?;
         let relays = if tag.len() > 2 && is_valid_relay_url(&tag[2]) {
             vec![tag[2].clone()]
         } else {
             vec![]
         };
 
-        Ok(Self { public_key, relays })
+        Ok(Self { pubkey, relays })
     }
 }
 
@@ -85,15 +85,15 @@ impl EventPointer {
 
 /// Pointer to a Nostr entity (addressable event)
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EntityPointer {
-    pub public_key: PubKey,
+pub struct AddressPointer {
+    pub pubkey: PubKey,
     pub kind: Kind,
     pub identifier: String,
     pub relays: Vec<String>,
 }
 
-impl EntityPointer {
-    /// create an EntityPointer from a tag
+impl AddressPointer {
+    /// create an AddressPointer from a tag
     pub fn from_tag(tag: &Tag) -> Result<Self, Error> {
         if tag.len() < 2 {
             return Err(Error::ShortTag);
@@ -106,7 +106,7 @@ impl EntityPointer {
 
         let kind: u16 = parts[0].parse().map_err(|_| Error::Invalid)?;
 
-        let public_key = PubKey::from_hex(parts[1]).map_err(|_| Error::Invalid)?;
+        let pubkey = PubKey::from_hex(parts[1]).map_err(|_| Error::Invalid)?;
         let identifier = parts[2].to_string();
 
         let relays = if tag.len() > 2 && is_valid_relay_url(&tag[2]) {
@@ -118,7 +118,7 @@ impl EntityPointer {
         Ok(Self {
             kind: Kind(kind),
             relays,
-            public_key,
+            pubkey,
             identifier,
         })
     }
@@ -128,9 +128,9 @@ impl Pointer {
     /// returns the pointer as a string as it would be seen in the value of a tag
     pub fn as_tag_reference(&self) -> String {
         match self {
-            Pointer::Profile(p) => p.public_key.to_hex(),
+            Pointer::Profile(p) => p.pubkey.to_hex(),
             Pointer::Event(p) => p.id.to_hex(),
-            Pointer::Entity(p) => format!("{}:{}:{}", p.kind, p.public_key.to_hex(), p.identifier),
+            Pointer::Address(p) => format!("{}:{}:{}", p.kind, p.pubkey.to_hex(), p.identifier),
         }
     }
 
@@ -138,7 +138,7 @@ impl Pointer {
     pub fn as_tag(&self) -> Tag {
         match self {
             Pointer::Profile(p) => {
-                let mut tag = vec!["p".to_string(), p.public_key.to_hex()];
+                let mut tag = vec!["p".to_string(), p.pubkey.to_hex()];
                 if !p.relays.is_empty() {
                     tag.push(p.relays[0].clone());
                 }
@@ -154,7 +154,7 @@ impl Pointer {
                 }
                 tag
             }
-            Pointer::Entity(p) => {
+            Pointer::Address(p) => {
                 let mut tag = vec!["a".to_string(), self.as_tag_reference()];
                 if !p.relays.is_empty() {
                     tag.push(p.relays[0].clone());
@@ -168,16 +168,16 @@ impl Pointer {
     pub fn as_filter(&self) -> Filter {
         match self {
             Pointer::Profile(p) => Filter {
-                authors: Some(vec![p.public_key]),
+                authors: Some(vec![p.pubkey]),
                 ..Default::default()
             },
             Pointer::Event(p) => Filter {
                 ids: Some(vec![p.id]),
                 ..Default::default()
             },
-            Pointer::Entity(p) => Filter {
+            Pointer::Address(p) => Filter {
                 kinds: Some(vec![p.kind]),
-                authors: Some(vec![p.public_key]),
+                authors: Some(vec![p.pubkey]),
                 tags: Some(hash_map!("d".to_string(): vec![p.identifier.clone()])),
                 ..Default::default()
             },
@@ -189,8 +189,8 @@ impl Pointer {
         match self {
             Pointer::Profile(_) => false,
             Pointer::Event(p) => event.id == p.id,
-            Pointer::Entity(p) => {
-                event.pubkey == p.public_key
+            Pointer::Address(p) => {
+                event.pubkey == p.pubkey
                     && event.kind == p.kind
                     && event.tags.get_d() == p.identifier
             }

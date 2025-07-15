@@ -81,7 +81,7 @@ pub async fn query_identifier(fullname: &str) -> Result<ProfilePointer> {
         .get(&name)
         .ok_or_else(|| Nip05Error::NoEntry(name.clone()))?;
 
-    let public_key = PubKey::from_hex(pubkey_hex)
+    let pubkey = PubKey::from_hex(pubkey_hex)
         .map_err(|_| Nip05Error::InvalidPublicKey(pubkey_hex.clone()))?;
 
     let relays = if let Some(relays_map) = &result.relays {
@@ -90,7 +90,7 @@ pub async fn query_identifier(fullname: &str) -> Result<ProfilePointer> {
         Vec::new()
     };
 
-    Ok(ProfilePointer { public_key, relays })
+    Ok(ProfilePointer { pubkey, relays })
 }
 
 /// fetch the well-known response for a NIP-05 identifier
@@ -196,7 +196,7 @@ mod tests {
         assert_eq!(
             query_identifier("mike@mikedilger.com").await.unwrap(),
             ProfilePointer {
-                public_key: PubKey::from_hex(
+                pubkey: PubKey::from_hex(
                     "ee11a5dff40c19a555f41fe42b48f00e618c91225622ae37b6c2bb67b76c4e49"
                 )
                 .unwrap(),
@@ -211,7 +211,7 @@ mod tests {
         assert_eq!(
             query_identifier("nvk.org").await.unwrap(),
             ProfilePointer {
-                public_key: PubKey::from_hex(
+                pubkey: PubKey::from_hex(
                     "e88a691e98d9987c964521dff60025f60700378a4879180dcbbb4a5027850411"
                 )
                 .unwrap(),

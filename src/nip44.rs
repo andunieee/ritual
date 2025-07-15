@@ -218,7 +218,7 @@ mod tests {
         plaintext: &str,
         expected: &str,
     ) {
-        let pub2 = SecretKey::from_hex(sk2_hex).unwrap().public_key();
+        let pub2 = SecretKey::from_hex(sk2_hex).unwrap().pubkey();
         let mut conversation_key: [u8; 32] = Default::default();
         lowercase_hex::decode_to_slice(conversation_key_hex, &mut conversation_key[0..32]).unwrap();
         let mut salt: [u8; 32] = Default::default();

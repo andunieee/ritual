@@ -105,39 +105,38 @@ where
     on_auth_url: Arc<Option<AuthURLHandler>>,
 
     // memoized
-    get_public_key_response: Arc<tokio::sync::Mutex<Option<PubKey>>>,
+    get_pubkey_response: Arc<tokio::sync::Mutex<Option<PubKey>>>,
 }
 
 impl BunkerClient {
     pub fn new(
         client_secret_key: SecretKey,
-        target_public_key: PubKey,
+        target_pubkey: PubKey,
         relays: Vec<String>,
         pool: Pool,
         on_auth_url: Option<AuthURLHandler>,
     ) -> Self {
-        let client_public_key = client_secret_key.public_key();
-        let conversation_key =
-            nip44::generate_conversation_key(&target_public_key, &client_secret_key);
+        let client_pubkey = client_secret_key.pubkey();
+        let conversation_key = nip44::generate_conversation_key(&target_pubkey, &client_secret_key);
 
         let bunker = Self {
             serial: Arc::new(AtomicU64::new(0)),
             client_secret_key,
             pool,
-            target: target_public_key,
+            target: target_pubkey,
             relays,
             conversation_key,
             listeners: Arc::new(DashMap::new()),
             expecting_auth: Arc::new(DashMap::new()),
             on_auth_url: Arc::new(on_auth_url),
-            get_public_key_response: Arc::new(tokio::sync::Mutex::new(None)),
+            get_pubkey_response: Arc::new(tokio::sync::Mutex::new(None)),
         };
 
         let bunker_clone = bunker.clone();
         tokio::spawn(async move {
             let filter = Filter {
                 kinds: Some(vec![Kind(24133)]),
-                tags: Some(hash_map!("#p".to_string(): vec![client_public_key.to_hex()])),
+                tags: Some(hash_map!("#p".to_string(): vec![client_pubkey.to_hex()])),
                 since: Some(Timestamp::now()),
                 ..Default::default()
             };
@@ -233,7 +232,7 @@ impl BunkerClient {
 
     pub async fn get_public_key(&self) -> Result<PubKey, GetPublicKeyError> {
         {
-            let guard = self.get_public_key_response.lock().await;
+            let guard = self.get_pubkey_response.lock().await;
             if let Some(pk) = *guard {
                 return Ok(pk);
             }
@@ -243,7 +242,7 @@ impl BunkerClient {
         let pk = PubKey::from_hex(&resp)?;
 
         {
-            let mut guard = self.get_public_key_response.lock().await;
+            let mut guard = self.get_pubkey_response.lock().await;
             *guard = Some(pk);
         }
 
@@ -274,12 +273,12 @@ impl BunkerClient {
 
     pub async fn nip44_encrypt(
         &self,
-        target_public_key: &PubKey,
+        target_pubkey: &PubKey,
         plaintext: &str,
     ) -> Result<String, RPCError> {
         self.rpc(
             "nip44_encrypt",
-            vec![target_public_key.to_hex(), plaintext.to_string()],
+            vec![target_pubkey.to_hex(), plaintext.to_string()],
             true,
         )
         .await
@@ -287,12 +286,12 @@ impl BunkerClient {
 
     pub async fn nip44_decrypt(
         &self,
-        target_public_key: &PubKey,
+        target_pubkey: &PubKey,
         ciphertext: &str,
     ) -> Result<String, RPCError> {
         self.rpc(
             "nip44_decrypt",
-            vec![target_public_key.to_hex(), ciphertext.to_string()],
+            vec![target_pubkey.to_hex(), ciphertext.to_string()],
             true,
         )
         .await
@@ -300,12 +299,12 @@ impl BunkerClient {
 
     pub async fn nip04_encrypt(
         &self,
-        target_public_key: &PubKey,
+        target_pubkey: &PubKey,
         plaintext: &str,
     ) -> Result<String, RPCError> {
         self.rpc(
             "nip04_encrypt",
-            vec![target_public_key.to_hex(), plaintext.to_string()],
+            vec![target_pubkey.to_hex(), plaintext.to_string()],
             true,
         )
         .await
@@ -313,12 +312,12 @@ impl BunkerClient {
 
     pub async fn nip04_decrypt(
         &self,
-        target_public_key: &PubKey,
+        target_pubkey: &PubKey,
         ciphertext: &str,
     ) -> Result<String, RPCError> {
         self.rpc(
             "nip04_decrypt",
-            vec![target_public_key.to_hex(), ciphertext.to_string()],
+            vec![target_pubkey.to_hex(), ciphertext.to_string()],
             true,
         )
         .await

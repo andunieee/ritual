@@ -20,29 +20,17 @@ pub enum DecodeError {
     #[error("secret key is invalid")]
     InvalidSecretKey(#[from] keys::SecretKeyError),
 
-    #[error("no {0} found")]
-    MissingField(String),
+    #[error("incomplete code {0}")]
+    Incomplete(Hrp),
 
-    #[error("incomplete {0}")]
-    Incomplete(String),
+    #[error("unknown prefix {0}")]
+    UnknownPrefix(Hrp),
 
-    #[error("unknown prefix '{0}'")]
-    UnknownPrefix(String),
+    #[error("malformed code {0}: {0}")]
+    Malformed(Hrp, String),
 
-    #[error("unexpected decode result for {0}")]
-    UnexpectedResult(String),
-
-    #[error("TLV value too long")]
-    TlvTooLong,
-
-    #[error("UTF-8 conversion error")]
-    Utf8(#[from] std::string::FromUtf8Error),
-
-    #[error("invalid uint32 value for kind")]
-    InvalidKind,
-
-    #[error("kind conversion error")]
-    KindConversionError,
+    #[error("although valid, this code cannot be converted to a pointer")]
+    NotAPointer,
 }
 
 const TLV_DEFAULT: u8 = 0;
@@ -56,7 +44,7 @@ pub enum DecodeResult {
     PubKey(PubKey),
     Profile(ProfilePointer),
     Event(EventPointer),
-    Entity(EntityPointer),
+    Address(AddressPointer),
 }
 
 /// decode a bech32-encoded NIP-19 string
@@ -103,18 +91,17 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult, DecodeError> {
             Ok(DecodeResult::PubKey(PubKey::from_bytes(bytes)?))
         }
         "nprofile" => {
-            let mut result = ProfilePointer {
-                public_key: PubKey::from_bytes([0u8; 32])?,
-                relays: Vec::new(),
-            };
             let mut curr = 0;
-            let mut found_pubkey = false;
+            let mut relays = Vec::new();
+            let mut pubkey = None;
 
             while curr < data.len() {
                 let (typ, value) = read_tlv_entry(&data[curr..]);
                 if value.is_empty() {
                     break;
                 }
+
+                curr += 2 + value.len();
 
                 match typ {
                     TLV_DEFAULT => {
@@ -126,41 +113,37 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult, DecodeError> {
                         }
                         let mut bytes = [0u8; 32];
                         bytes.copy_from_slice(&value);
-                        result.public_key = PubKey::from_bytes(bytes)?;
-                        found_pubkey = true;
+                        pubkey = Some(PubKey::from_bytes(bytes)?);
                     }
                     TLV_RELAY => {
-                        result.relays.push(String::from_utf8(value.clone())?);
+                        relays.push(String::from_utf8(value).map_err(|err| {
+                            DecodeError::Malformed(prefix, format!("utf8 error: {}", err))
+                        })?);
                     }
                     _ => {
                         // ignore unknown TLV types
                     }
                 }
-
-                curr += 2 + value.len();
             }
 
-            if !found_pubkey {
-                return Err(DecodeError::MissingField("pubkey for nprofile".to_string()));
+            match pubkey {
+                Some(pubkey) => Ok(DecodeResult::Profile(ProfilePointer { pubkey, relays })),
+                None => Err(DecodeError::Incomplete(prefix)),
             }
-
-            Ok(DecodeResult::Profile(result))
         }
         "nevent" => {
-            let mut result = EventPointer {
-                id: ID::from_bytes([0u8; 32]),
-                relays: Vec::new(),
-                author: None,
-                kind: None,
-            };
             let mut curr = 0;
-            let mut found_id = false;
+            let mut relays = Vec::new();
+            let mut author = None;
+            let mut kind = None;
+            let mut id = None;
 
             while curr < data.len() {
                 let (typ, value) = read_tlv_entry(&data[curr..]);
                 if value.is_empty() {
                     break;
                 }
+                curr += 2 + value.len();
 
                 match typ {
                     TLV_DEFAULT => {
@@ -172,11 +155,12 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult, DecodeError> {
                         }
                         let mut bytes = [0u8; 32];
                         bytes.copy_from_slice(&value);
-                        result.id = ID::from_bytes(bytes);
-                        found_id = true;
+                        id = Some(ID::from_bytes(bytes));
                     }
                     TLV_RELAY => {
-                        result.relays.push(String::from_utf8(value.clone())?);
+                        relays.push(String::from_utf8(value).map_err(|err| {
+                            DecodeError::Malformed(prefix, format!("utf8 error: {}", err))
+                        })?);
                     }
                     TLV_AUTHOR => {
                         if value.len() != 32 {
@@ -187,57 +171,59 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult, DecodeError> {
                         }
                         let mut bytes = [0u8; 32];
                         bytes.copy_from_slice(&value);
-                        result.author = Some(PubKey::from_bytes(bytes)?);
+                        author = Some(PubKey::from_bytes(bytes)?);
                     }
                     TLV_KIND => {
                         if value.len() != 4 {
-                            return Err(DecodeError::InvalidKind);
+                            return Err(DecodeError::Malformed(
+                                prefix,
+                                "invalid kind length".to_string(),
+                            ));
                         }
-                        let kind_bytes: [u8; 4] = value
-                            .clone()
-                            .try_into()
-                            .map_err(|_| DecodeError::KindConversionError)?;
-                        result.kind = Some(Kind(u32::from_be_bytes(kind_bytes) as u16));
+                        let kind_bytes: [u8; 4] = (&value[0..4]).try_into().unwrap();
+                        kind = Some(Kind(u32::from_be_bytes(kind_bytes) as u16));
                     }
                     _ => {
                         // ignore unknown TLV types
                     }
                 }
-
-                curr += 2 + value.len();
             }
 
-            if !found_id {
-                return Err(DecodeError::MissingField("id for nevent".to_string()));
+            match id {
+                Some(id) => Ok(DecodeResult::Event(EventPointer {
+                    id,
+                    relays,
+                    author,
+                    kind,
+                })),
+                None => Err(DecodeError::Incomplete(prefix)),
             }
-
-            Ok(DecodeResult::Event(result))
         }
         "naddr" => {
-            let mut result = EntityPointer {
-                public_key: PubKey::from_bytes([0u8; 32])?,
-                kind: Kind(0),
-                identifier: String::new(),
-                relays: Vec::new(),
-            };
             let mut curr = 0;
-            let mut found_kind = false;
-            let mut found_identifier = false;
-            let mut found_pubkey = false;
+            let mut kind = None;
+            let mut identifier = None;
+            let mut pubkey = None;
+            let mut relays = Vec::new();
 
             while curr < data.len() {
                 let (typ, value) = read_tlv_entry(&data[curr..]);
                 if value.is_empty() {
                     break;
                 }
+                curr += 2 + value.len();
 
                 match typ {
                     TLV_DEFAULT => {
-                        result.identifier = String::from_utf8(value.clone())?;
-                        found_identifier = true;
+                        let str = String::from_utf8(value).map_err(|err| {
+                            DecodeError::Malformed(prefix, format!("utf8 error: {}", err))
+                        })?;
+                        identifier = Some(str);
                     }
                     TLV_RELAY => {
-                        result.relays.push(String::from_utf8(value.clone())?);
+                        relays.push(String::from_utf8(value).map_err(|err| {
+                            DecodeError::Malformed(prefix, format!("utf8 error: {}", err))
+                        })?);
                     }
                     TLV_AUTHOR => {
                         if value.len() != 32 {
@@ -248,35 +234,37 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult, DecodeError> {
                         }
                         let mut bytes = [0u8; 32];
                         bytes.copy_from_slice(&value);
-                        result.public_key = PubKey::from_bytes(bytes)?;
-                        found_pubkey = true;
+                        pubkey = Some(PubKey::from_bytes(bytes)?);
                     }
                     TLV_KIND => {
                         if value.len() != 4 {
-                            return Err(DecodeError::InvalidKind);
+                            return Err(DecodeError::Malformed(
+                                prefix,
+                                "invalid kind length".to_string(),
+                            ));
                         }
-                        let kind_bytes: [u8; 4] = value
-                            .clone()
-                            .try_into()
-                            .map_err(|_| DecodeError::KindConversionError)?;
-                        result.kind = Kind(u32::from_be_bytes(kind_bytes) as u16);
-                        found_kind = true;
+                        let kind_bytes: [u8; 4] = value.try_into().unwrap();
+                        kind = Some(Kind(u32::from_be_bytes(kind_bytes) as u16));
                     }
                     _ => {
                         // ignore unknown TLV types
                     }
                 }
-
-                curr += 2 + value.len();
             }
 
-            if !found_kind || !found_identifier || !found_pubkey {
-                return Err(DecodeError::Incomplete("naddr".to_string()));
+            match (kind, pubkey, identifier) {
+                (Some(kind), Some(pubkey), Some(identifier)) => {
+                    Ok(DecodeResult::Address(AddressPointer {
+                        pubkey,
+                        kind,
+                        identifier,
+                        relays,
+                    }))
+                }
+                _ => Err(DecodeError::Incomplete(prefix)),
             }
-
-            Ok(DecodeResult::Entity(result))
         }
-        _ => Err(DecodeError::UnknownPrefix(prefix.to_string())),
+        _ => Err(DecodeError::UnknownPrefix(prefix)),
     }
 }
 
@@ -349,13 +337,13 @@ pub fn encode_pointer(pointer: &Pointer) -> String {
     match pointer {
         Pointer::Profile(p) => {
             if p.relays.is_empty() {
-                encode_npub(&p.public_key)
+                encode_npub(&p.pubkey)
             } else {
-                encode_nprofile(&p.public_key, &p.relays)
+                encode_nprofile(&p.pubkey, &p.relays)
             }
         }
         Pointer::Event(p) => encode_nevent(&p.id, &p.relays, p.author.as_ref()),
-        Pointer::Entity(p) => encode_naddr(&p.public_key, p.kind, &p.identifier, &p.relays),
+        Pointer::Address(p) => encode_naddr(&p.pubkey, p.kind, &p.identifier, &p.relays),
     }
 }
 
@@ -363,13 +351,13 @@ pub fn encode_pointer(pointer: &Pointer) -> String {
 pub fn to_pointer(code: &str) -> Result<Pointer, DecodeError> {
     match decode(code)? {
         DecodeResult::PubKey(pk) => Ok(Pointer::Profile(ProfilePointer {
-            public_key: pk,
+            pubkey: pk,
             relays: Vec::new(),
         })),
         DecodeResult::Profile(p) => Ok(Pointer::Profile(p)),
         DecodeResult::Event(p) => Ok(Pointer::Event(p)),
-        DecodeResult::Entity(p) => Ok(Pointer::Entity(p)),
-        _ => Err(DecodeError::UnexpectedResult(code.to_string())),
+        DecodeResult::Address(p) => Ok(Pointer::Address(p)),
+        _ => Err(DecodeError::NotAPointer),
     }
 }
 
@@ -453,7 +441,7 @@ mod tests {
 
         let result = decode(&nprofile).unwrap();
         if let DecodeResult::Profile(profile) = result {
-            assert_eq!(profile.public_key, pk);
+            assert_eq!(profile.pubkey, pk);
             assert_eq!(profile.relays, relays);
         } else {
             panic!("Expected Profile result");

@@ -45,7 +45,7 @@ pub use event_template::EventTemplate;
 pub use filter::Filter;
 pub use keys::{PubKey, SecretKey};
 pub use normalize::*;
-pub use pointers::{EntityPointer, EventPointer, Pointer, ProfilePointer};
+pub use pointers::{AddressPointer, EventPointer, Pointer, ProfilePointer};
 pub use tags::{Tag, Tags};
 pub use timestamp::Timestamp;
 pub use types::*;

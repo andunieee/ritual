@@ -15,7 +15,7 @@ pub struct EventTemplate {
 impl EventTemplate {
     /// returns a signed event with id, pubkey and sig
     pub fn finalize(self, secret_key: &SecretKey) -> Event {
-        let pubkey = secret_key.public_key();
+        let pubkey = secret_key.pubkey();
 
         // create keypair from secret key
         let keypair = Keypair::from_seckey_byte_array(SECP256K1, secret_key.0)
