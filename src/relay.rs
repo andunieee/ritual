@@ -41,7 +41,10 @@ pub(crate) struct SubSender {
 }
 
 #[derive(Clone, Debug)]
-pub struct Relay {
+pub struct Relay
+where
+    Self: Send + Sync,
+{
     pub url: Url,
     // by connection
     challenge: Arc<RwLock<Option<String>>>,
@@ -74,6 +77,7 @@ impl Relay {
         )
         .await
         .map_err(|_| ConnectError::Websocket)?;
+
         let (conn_write, mut conn_read) = ws_stream.split();
 
         let relay = Self {

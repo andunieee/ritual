@@ -1,5 +1,4 @@
 use std::fmt::Debug;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -37,8 +36,8 @@ impl Debug for AuthURLHandler {
 
 #[derive(Error, Debug)]
 pub enum RPCError {
-    #[error("couldn't connect to any relay")]
-    NoRelays,
+    #[error("we're not connected to any relay")]
+    NoRelays(Vec<String>),
 
     #[error("response channel closed")]
     NoResponse,
@@ -96,7 +95,6 @@ pub struct BunkerClient
 where
     Self: Send + Sync,
 {
-    serial: Arc<AtomicU64>,
     client_secret_key: SecretKey,
     pool: Pool,
     target: PubKey,
@@ -121,7 +119,6 @@ impl BunkerClient {
         let conversation_key = nip44::generate_conversation_key(&target_pubkey, &client_secret_key);
 
         let bunker = Self {
-            serial: Arc::new(AtomicU64::new(0)),
             client_secret_key,
             pool,
             target: target_pubkey,
@@ -344,7 +341,7 @@ impl BunkerClient {
         // publish
         let mut sent = false;
         for url in self.relays.iter() {
-            if let Ok(relay) = self.pool.ensure_relay(url).await {
+            if let Some(relay) = self.pool.get_relay(url) {
                 if relay.publish(event.clone()).await.is_ok() {
                     sent = true;
                 }
@@ -352,7 +349,7 @@ impl BunkerClient {
         }
 
         if !sent {
-            return Err(RPCError::NoRelays);
+            return Err(RPCError::NoRelays(self.relays.clone()));
         }
 
         // wait for response

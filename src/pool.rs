@@ -58,9 +58,22 @@ impl Pool {
         }
     }
 
+    /// get an existing relay connection if it exists, do not try to open a new one
+    pub fn get_relay(&self, url: &str) -> Option<Relay> {
+        let normalized_url = normalize_url(url).ok()?;
+        self.relays
+            .get(normalized_url.as_str())
+            .map(|relay| relay.clone())
+    }
+
     /// get or create a relay connection to the given url
     pub async fn ensure_relay(&self, url: &str) -> Result<Relay, EnsureError> {
         let normalized_url = normalize_url(url)?;
+
+        // check if relay already exists
+        if let Some(relay) = self.relays.get(normalized_url.as_str()) {
+            return Ok(relay.clone());
+        }
 
         // check penalty box
         if let Some(ref penalty_box) = self.penalty_box {
@@ -70,11 +83,6 @@ impl Pool {
                     return Err(EnsureError::PenaltyBox(remaining));
                 }
             }
-        }
-
-        // check if relay already exists
-        if let Some(relay) = self.relays.get(normalized_url.as_str()) {
-            return Ok(relay.clone());
         }
 
         // create new relay connection

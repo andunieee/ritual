@@ -22,10 +22,10 @@ impl Finalizer {
     pub async fn finalize_event(&self, evt: EventTemplate) -> Result<Event, Error> {
         match self {
             Self::Plain(sk) => Ok(evt.finalize(sk)),
-            Self::Bunker(_) => Err(Error::SomethingWentWrong), // bk
-                                                               // .finalize_event(evt)
-                                                               // .await
-                                                               // .map_err(|_| Error::SomethingWentWrong),
+            Self::Bunker(b) => b
+                .finalize_event(evt)
+                .await
+                .map_err(|_| Error::SomethingWentWrong),
         }
     }
 }
