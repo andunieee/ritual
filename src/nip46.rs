@@ -7,7 +7,7 @@ use crate::SecretKey;
 use crate::{keys, nip44, pool::Pool, Event, EventTemplate, Filter, Kind, PubKey, Tags, Timestamp};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use slotmap::{new_key_type, Key, KeyData, SecondaryMap, SlotMap};
+use slotmap::{new_key_type, Key, KeyData, SlotMap};
 use thiserror::Error;
 use tokio::sync::{oneshot, Mutex};
 use url::Url;
@@ -27,7 +27,7 @@ pub struct Response {
     pub error: Option<String>,
 }
 
-pub struct AuthURLHandler(Box<dyn Fn(String) + Send + Sync>);
+pub struct AuthURLHandler(Box<dyn Fn(&str) + Send + Sync>);
 
 impl Debug for AuthURLHandler {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -103,7 +103,6 @@ where
     relays: Vec<String>,
     conversation_key: [u8; 32],
     awaiting_responses: Arc<Mutex<SlotMap<RequestKey, oneshot::Sender<Response>>>>,
-    expecting_auth: Arc<Mutex<SecondaryMap<RequestKey, ()>>>,
     on_auth_url: Arc<Option<AuthURLHandler>>,
 
     // memoized
@@ -129,7 +128,6 @@ impl BunkerClient {
             relays,
             conversation_key,
             awaiting_responses: Arc::new(Mutex::new(SlotMap::with_capacity_and_key(10))),
-            expecting_auth: Arc::new(Mutex::new(SecondaryMap::with_capacity(10))),
             on_auth_url: Arc::new(on_auth_url),
             get_pubkey_response: Arc::new(tokio::sync::Mutex::new(None)),
         };
@@ -137,7 +135,6 @@ impl BunkerClient {
         let pool = bunker.pool.clone();
         let relays = bunker.relays.clone();
         let on_auth_url = bunker.on_auth_url.clone();
-        let expecting_auth = bunker.expecting_auth.clone();
         let awaiting_responses = bunker.awaiting_responses.clone();
         tokio::spawn(async move {
             let filter = Filter {
@@ -153,7 +150,6 @@ impl BunkerClient {
 
                 let pool = pool.clone();
                 let on_auth_url = on_auth_url.clone();
-                let expecting_auth = expecting_auth.clone();
                 let awaiting_responses = awaiting_responses.clone();
                 tokio::spawn(async move {
                     if let Ok(relay) = pool.ensure_relay(&url).await {
@@ -177,15 +173,13 @@ impl BunkerClient {
                                         };
 
                                         if resp.result.as_deref() == Some("auth_url") {
-                                            if let Some(auth_url) = resp.error {
-                                                if expecting_auth.lock().await.remove(rk).is_some()
+                                            if let Some(auth_url) = &resp.error {
                                                 {
                                                     if let Some(on_auth_fn) = on_auth_url.as_ref() {
                                                         on_auth_fn.0(auth_url);
                                                     }
                                                 }
                                             }
-                                            continue;
                                         }
 
                                         if let Some(dispatcher) =
@@ -233,12 +227,12 @@ impl BunkerClient {
 
         let bunker = Self::new(client_secret_key, pk, relays, pool, on_auth_url);
 
-        bunker.rpc("connect", params, true).await?;
+        bunker.rpc("connect", params).await?;
         Ok(bunker)
     }
 
     pub async fn ping(&self) -> Result<(), RPCError> {
-        self.rpc("ping", vec![], false).await?;
+        self.rpc("ping", vec![]).await?;
         Ok(())
     }
 
@@ -250,7 +244,7 @@ impl BunkerClient {
             }
         }
 
-        let resp = self.rpc("get_public_key", vec![], false).await?;
+        let resp = self.rpc("get_public_key", vec![]).await?;
         let pk = PubKey::from_hex(&resp)?;
 
         {
@@ -266,7 +260,7 @@ impl BunkerClient {
         event_template: EventTemplate,
     ) -> Result<Event, FinalizeError> {
         let event_json = json!(event_template).to_string();
-        let resp = self.rpc("sign_event", vec![event_json], true).await?;
+        let resp = self.rpc("sign_event", vec![event_json]).await?;
         let event: Event = serde_json::from_str(&resp).map_err(|_| FinalizeError::InvalidEvent)?;
 
         if !event.verify_signature() {
@@ -284,7 +278,6 @@ impl BunkerClient {
         self.rpc(
             "nip44_encrypt",
             vec![target_pubkey.to_hex(), plaintext.to_string()],
-            true,
         )
         .await
     }
@@ -297,7 +290,6 @@ impl BunkerClient {
         self.rpc(
             "nip44_decrypt",
             vec![target_pubkey.to_hex(), ciphertext.to_string()],
-            true,
         )
         .await
     }
@@ -310,7 +302,6 @@ impl BunkerClient {
         self.rpc(
             "nip04_encrypt",
             vec![target_pubkey.to_hex(), plaintext.to_string()],
-            true,
         )
         .await
     }
@@ -323,17 +314,11 @@ impl BunkerClient {
         self.rpc(
             "nip04_decrypt",
             vec![target_pubkey.to_hex(), ciphertext.to_string()],
-            true,
         )
         .await
     }
 
-    async fn rpc(
-        &self,
-        method: &str,
-        params: Vec<String>,
-        expect_auth: bool,
-    ) -> Result<String, RPCError> {
+    async fn rpc(&self, method: &str, params: Vec<String>) -> Result<String, RPCError> {
         // prepare response listener
         let (tx, rx) = oneshot::channel::<Response>();
         let rk = self.awaiting_responses.lock().await.insert(tx);
@@ -355,10 +340,6 @@ impl BunkerClient {
             ..Default::default()
         }
         .finalize(&self.client_secret_key);
-
-        if expect_auth {
-            self.expecting_auth.lock().await.insert(rk, ());
-        }
 
         // publish
         let mut sent = false;
@@ -385,12 +366,10 @@ impl BunkerClient {
             }
             Ok(Err(_)) => {
                 self.awaiting_responses.lock().await.remove(rk);
-                self.expecting_auth.lock().await.remove(rk);
                 Err(RPCError::NoResponse)
             }
             Err(_) => {
                 self.awaiting_responses.lock().await.remove(rk);
-                self.expecting_auth.lock().await.remove(rk);
                 Err(RPCError::Timeout)
             }
         }
