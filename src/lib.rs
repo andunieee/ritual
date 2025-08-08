@@ -1,4 +1,4 @@
-//! # roastn
+//! # ritual
 //!
 //! nostr types and utilities
 //!
