@@ -5,7 +5,9 @@ use sha2::{Digest, Sha256};
 use std::fmt;
 
 /// represents a signed nostr event
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Deserialize, rkyv::Serialize,
+)]
 pub struct Event {
     pub id: ID,
     pub pubkey: PubKey,

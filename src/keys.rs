@@ -104,7 +104,7 @@ impl fmt::Display for SecretKey {
 }
 
 /// a 32-byte public key
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Deserialize, rkyv::Serialize)]
 pub struct PubKey(pub [u8; 32]);
 
 impl PubKey {
@@ -127,7 +127,7 @@ impl PubKey {
 
     pub fn as_u64_lossy(&self) -> u64 {
         let bytes: [u8; 8] = self.0[8..16].try_into().unwrap();
-        u64::from_be_bytes(bytes)
+        u64::from_ne_bytes(bytes)
     }
 
     pub fn from_hex(hex_str: &str) -> Result<Self, PubKeyError> {

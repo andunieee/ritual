@@ -6,6 +6,7 @@ use thiserror::Error;
 pub enum IDError {
     #[error("invalid hex encoding")]
     InvalidHex(#[from] lowercase_hex::FromHexError),
+
     #[error("invalid ID length: expected 32 bytes, got {0}")]
     InvalidLength(usize),
 }
@@ -19,7 +20,7 @@ pub enum SignatureError {
 }
 
 /// A 32-byte event ID
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Deserialize, rkyv::Serialize)]
 pub struct ID(pub [u8; 32]);
 
 impl ID {
@@ -33,7 +34,7 @@ impl ID {
 
     pub fn as_u64_lossy(&self) -> u64 {
         let bytes: [u8; 8] = self.0[8..16].try_into().unwrap();
-        u64::from_be_bytes(bytes)
+        u64::from_ne_bytes(bytes)
     }
 
     pub fn from_hex(hex_str: &str) -> Result<Self, IDError> {
@@ -82,7 +83,7 @@ impl fmt::Display for ID {
 }
 
 /// A 64-byte signature
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Deserialize, rkyv::Serialize)]
 pub struct Signature(pub [u8; 64]);
 
 impl Signature {
@@ -148,7 +149,20 @@ pub type TagMap = std::collections::HashMap<String, Vec<String>>;
 
 /// event kind type
 #[derive(
-    Copy, Error, Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize,
+    Copy,
+    Error,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Default,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Deserialize,
+    rkyv::Serialize,
 )]
 pub struct Kind(pub u16);
 

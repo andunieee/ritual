@@ -2,11 +2,11 @@
 //!
 //! This module provides an LMDB-backed event store for Nostr events.
 
-use crate::{Event, Filter, Timestamp, ID};
-use fasthash::MumHasher;
+use crate::{event::ArchivedEvent, Event, Filter, Timestamp, ID};
 use heed::byteorder::LittleEndian;
-use heed::{byteorder, types::*, DefaultComparator};
-use heed::{Database, Env, EnvOpenOptions, RoTxn, RwTxn};
+use heed::{byteorder, types::*, DefaultComparator, RoTxn};
+use heed::{Database, Env, EnvOpenOptions, RwTxn};
+use rkyv::rancor;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
@@ -17,16 +17,24 @@ use velcro::hash_map;
 pub enum LMDBError {
     #[error("LMDB error: {0}")]
     Heed(#[from] heed::Error),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
     #[error("serialization error: {0}")]
-    Serialization(#[from] serde_json::Error),
+    Serialization(#[from] rancor::Error),
+
     #[error("event with values out of expected boundaries {created_at}/{kind}")]
     OutOfBounds { created_at: i64, kind: u16 },
+
     #[error("duplicate event")]
     DuplicateEvent,
+
     #[error("event not found")]
     EventNotFound,
+
+    #[error("invalid query: {0}")]
+    InvalidFilter(String),
 }
 
 pub type Result<T> = std::result::Result<T, LMDBError>;
@@ -38,13 +46,15 @@ pub struct LMDBStore {
 
     env: Env,
 
-    // databases
+    // indexes
     events_by_id: Database<U64<byteorder::LittleEndian>, Bytes>,
     index_created_at: Database<Bytes, U64<byteorder::LittleEndian>>,
     index_kind: Database<Bytes, U64<byteorder::LittleEndian>>,
     index_pubkey: Database<Bytes, U64<byteorder::LittleEndian>>,
     index_pubkey_kind: Database<Bytes, U64<byteorder::LittleEndian>>,
     index_tag: Database<Bytes, U64<byteorder::LittleEndian>>,
+    index_tag32: Database<Bytes, U64<byteorder::LittleEndian>>,
+    index_ptag_ktag: Database<Bytes, U64<byteorder::LittleEndian>>,
 }
 
 impl LMDBStore {
@@ -72,11 +82,13 @@ impl LMDBStore {
         let mut wtxn = env.write_txn()?;
 
         let events_by_id = env.create_database(&mut wtxn, Some("events"))?;
-        let index_created_at = env.create_database(&mut wtxn, Some("created_at"))?;
+        let index_created_at = env.create_database(&mut wtxn, Some("createdat"))?;
         let index_kind = env.create_database(&mut wtxn, Some("kind"))?;
         let index_pubkey = env.create_database(&mut wtxn, Some("pubkey"))?;
-        let index_pubkey_kind = env.create_database(&mut wtxn, Some("pubkeyKind"))?;
+        let index_pubkey_kind = env.create_database(&mut wtxn, Some("pubkey_kind"))?;
         let index_tag = env.create_database(&mut wtxn, Some("tag"))?;
+        let index_tag32 = env.create_database(&mut wtxn, Some("tag32"))?;
+        let index_ptag_ktag = env.create_database(&mut wtxn, Some("ptag_ktag"))?;
 
         wtxn.commit()?;
 
@@ -90,14 +102,11 @@ impl LMDBStore {
             index_pubkey,
             index_pubkey_kind,
             index_tag,
+            index_tag32,
+            index_ptag_ktag,
         };
 
         Ok(store)
-    }
-
-    /// close the database
-    pub fn close(&self) {
-        // heed automatically closes when dropped
     }
 
     /// save an event
@@ -121,16 +130,20 @@ impl LMDBStore {
 
     /// internal save function
     fn save(&self, wtxn: &mut RwTxn, event: &Event) -> Result<()> {
-        let event_data = serde_json::to_vec(event)?;
-        let id = event.id.as_u64_lossy();
+        let event_data = rkyv::to_bytes::<rancor::Error>(event)?;
+        let id_u64 = &event.id.as_u64_lossy();
 
         // save raw event
-        self.events_by_id.put(wtxn, &id, &event_data)?;
+        self.events_by_id.put(wtxn, id_u64, &event_data)?;
 
         // save indexes
-        for index_key in self.get_index_keys_for_event(event) {
-            index_key.db.put(wtxn, &index_key.key, &id)?
-        }
+        self.get_index_keys_for_event(
+            unsafe { &rkyv::from_bytes_unchecked::<Event, rancor::Error>(&event_data)? },
+            |index_key| {
+                index_key.db.put(wtxn, &index_key.key, id_u64)?;
+                Ok(())
+            },
+        )?;
 
         Ok(())
     }
@@ -138,104 +151,100 @@ impl LMDBStore {
     /// delete an event
     pub fn delete_event(&self, id: &ID) -> Result<()> {
         let mut wtxn = self.env.write_txn()?;
-        self.delete(&mut wtxn, id)?;
+        self.delete_internal(&mut wtxn, id.as_u64_lossy())?;
         wtxn.commit()?;
         Ok(())
     }
 
     /// internal delete function
-    fn delete(&self, wtxn: &mut RwTxn, id: &ID) -> Result<()> {
-        let id = &id.as_u64_lossy();
-
+    fn delete_internal(&self, wtxn: &mut RwTxn, id: u64) -> Result<()> {
         // get the event data to compute indexes
-        let event_data = self
+        let raw = self
             .events_by_id
-            .get(wtxn, id)?
+            .get(wtxn, &id)?
             .ok_or(LMDBError::EventNotFound)?;
-        let event: Event = serde_json::from_slice(event_data)?;
+
+        let event = unsafe { rkyv::from_bytes_unchecked::<Event, rancor::Error>(raw)? };
 
         // delete all indexes
-        for index_key in self.get_index_keys_for_event(&event) {
+        self.get_index_keys_for_event(&event, |index_key| {
             index_key.db.delete(wtxn, &index_key.key)?;
-        }
+            Ok(())
+        })?;
 
         // delete raw event
-        self.events_by_id.delete(wtxn, id)?;
+        self.events_by_id.delete(wtxn, &id)?;
 
         Ok(())
     }
 
     /// query events
-    pub fn query_events(&self, filter: &Filter, max_limit: usize) -> Result<Vec<Event>> {
+    pub fn query_events<F>(&self, filter: &Filter, max_limit: usize, mut cb: F) -> Result<()>
+    where
+        F: FnMut(&ArchivedEvent) -> Result<()>,
+    {
         if filter.search.is_some() {
-            return Ok(vec![]); // search not supported
+            return Err(LMDBError::InvalidFilter("search not supported".to_string()));
         }
 
         let limit = filter.limit.unwrap_or(max_limit).min(max_limit);
         if limit == 0 {
-            return Ok(vec![]);
+            return Ok(());
         }
 
         let rtxn = self.env.read_txn()?;
-        let results = self.query(&rtxn, filter, limit)?;
+
+        if let Some(ids) = &filter.ids {
+            return self.query_by_ids(&rtxn, ids, cb);
+        }
+
+        self.query_by_filter(&rtxn, filter, limit, cb)?;
         rtxn.commit()?;
 
-        Ok(results)
+        Ok(())
     }
 
-    /// internal query function
-    fn query(&self, rtxn: &RoTxn, filter: &Filter, limit: usize) -> Result<Vec<Event>> {
-        let mut results = Vec::new();
+    fn query_by_ids<F>(&self, rtxn: &RoTxn, ids: &Vec<ID>, mut cb: F) -> Result<()>
+    where
+        F: FnMut(&ArchivedEvent) -> Result<()>,
+    {
+        for id in ids {
+            if let Ok(Some(raw)) = self.events_by_id.get(rtxn, &id.as_u64_lossy()) {
+                let event = unsafe { rkyv::access_unchecked::<ArchivedEvent>(raw) };
+                cb(event)?;
+            }
+        }
 
-        // simplified query - just iterate through created_at index
-        // TODO: do the actual query
+        Ok(())
+    }
+
+    fn query_by_filter<F>(
+        &self,
+        rtxn: &RoTxn,
+        filter: &Filter,
+        limit: usize,
+        mut cb: F,
+    ) -> Result<()>
+    where
+        F: FnMut(&ArchivedEvent) -> Result<()>,
+    {
         let iter = self.index_created_at.rev_iter(rtxn)?;
 
         for item in iter {
             let (_, id) = item?;
-            let event_data = self
+            let raw = self
                 .events_by_id
                 .get(rtxn, &id)?
                 .ok_or(LMDBError::EventNotFound)?;
-            let event: Event = serde_json::from_slice(event_data)?;
-
-            if filter.matches(&event) {
-                results.push(event);
-                if results.len() >= limit {
-                    break;
-                }
-            }
+            let event: &ArchivedEvent = unsafe { rkyv::access_unchecked(raw) };
+            cb(event)?
         }
 
-        Ok(results)
-    }
-
-    /// count events matching filter
-    pub fn count_events(&self, filter: &Filter) -> Result<u32> {
-        let rtxn = self.env.read_txn()?;
-        let mut count = 0u32;
-
-        let iter = self.index_created_at.rev_iter(&rtxn)?;
-
-        for item in iter {
-            let (_, id) = item?;
-            let event_data = self
-                .events_by_id
-                .get(&rtxn, &id)?
-                .ok_or(LMDBError::EventNotFound)?;
-            let event: Event = serde_json::from_slice(event_data)?;
-
-            if filter.matches(&event) {
-                count += 1;
-            }
-        }
-
-        rtxn.commit()?;
-        Ok(count)
+        Ok(())
     }
 
     /// replace event
-    pub fn replace_event(&self, event: &Event) -> Result<()> {
+    pub fn replace_event(&self, event: &Event, with_address: bool) -> Result<()> {
         let mut wtxn = self.env.write_txn()?;
 
         // create filter to find existing events
@@ -244,27 +253,27 @@ impl LMDBStore {
         filter.authors = Some(vec![event.pubkey]);
         filter.limit = Some(10);
 
-        if event.kind.is_addressable() {
-            // addressable event - add d tag
-            let d_tag = event.tags.get_d();
-            if !d_tag.is_empty() {
-                filter.tags = Some(hash_map!("d".to_string(): vec![d_tag]));
-            }
+        if with_address {
+            filter.tags = Some(hash_map!("d".to_string(): vec![event.tags.get_d()]));
         }
+
+        let mut should_store = true;
 
         // find and delete older events
         let rtxn = self.env.read_txn()?;
-        let existing = self.query(&rtxn, &filter, 10)?;
-        rtxn.commit()?;
-
-        let mut should_store = true;
-        for existing_event in existing {
-            if existing_event.created_at < event.created_at {
-                self.delete(&mut wtxn, &existing_event.id)?;
+        self.query_by_filter(&rtxn, &filter, 10, |existing_event| {
+            if existing_event.created_at.0 < event.created_at.0 {
+                self.delete_internal(
+                    &mut wtxn,
+                    u64::from_ne_bytes(existing_event.id.0[8..16].try_into().unwrap()),
+                )?;
             } else {
                 should_store = false; // newer event already exists
             }
-        }
+
+            Ok(())
+        })?;
+        rtxn.commit()?;
 
         if should_store {
             self.save(&mut wtxn, event)?;
@@ -274,113 +283,152 @@ impl LMDBStore {
         Ok(())
     }
 
-    /// generate index keys for an event
-    fn get_index_keys_for_event(&self, event: &Event) -> Vec<IndexKey> {
-        let mut keys = Vec::new();
-
+    fn get_index_keys_for_event<F>(&self, event: &Event, mut cb: F) -> Result<()>
+    where
+        F: FnMut(IndexKey) -> Result<()>,
+    {
         // this is so the events are ordered from newer to older
         let ts_bytes = inverted_timestamp_bytes(&event.created_at);
 
         // by date only
         {
-            let mut key = [INDEX_CREATED_AT_PREFIX; 1 + 4];
-            key[1..].copy_from_slice(&ts_bytes);
-            keys.push(IndexKey {
+            cb(IndexKey {
                 db: self.index_created_at,
-                key: key.to_vec(),
-            });
+                key: &ts_bytes,
+            })?;
         }
 
         // by kind + date
         {
-            let mut key = [INDEX_KIND_PREFIX; 1 + 2 + 4];
-            key[1..1 + 2].copy_from_slice(&event.kind.0.to_be_bytes());
-            key[1 + 2..].copy_from_slice(&ts_bytes);
-            keys.push(IndexKey {
+            let mut key = [0u8, 2 + 4];
+            key[0..2].copy_from_slice(&event.kind.0.to_ne_bytes());
+            key[2..].copy_from_slice(&ts_bytes);
+            cb(IndexKey {
                 db: self.index_kind,
-                key: key.to_vec(),
-            });
+                key: &key,
+            })?;
         }
 
         // by pubkey + date
         {
-            let mut key = [INDEX_PUBKEY_PREFIX; 1 + 8 + 4];
-            key[1..1 + 8].copy_from_slice(&event.pubkey.as_bytes()[0..8]);
-            key[1 + 8..].copy_from_slice(&ts_bytes);
-            keys.push(IndexKey {
+            let mut key = [8 + 4];
+            key[0..8].copy_from_slice(&event.pubkey.as_u64_lossy().to_ne_bytes());
+            key[8..].copy_from_slice(&ts_bytes);
+            cb(IndexKey {
                 db: self.index_pubkey,
-                key: key.to_vec(),
-            });
+                key: &key,
+            })?;
         }
 
         // by pubkey + kind + date
         {
-            let mut key = [INDEX_PUBKEY_KIND_PREFIX; 1 + 8 + 2 + 4];
-            key[1..1 + 8].copy_from_slice(&event.pubkey.as_bytes()[0..8]);
-            key[1 + 8..1 + 8 + 2].copy_from_slice(&event.kind.0.to_be_bytes());
-            key[1 + 8 + 2..].copy_from_slice(&ts_bytes);
-            keys.push(IndexKey {
+            let mut key = [0u8; 8 + 2 + 4];
+            key[0..8].copy_from_slice(&event.pubkey.as_u64_lossy().to_ne_bytes());
+            key[8..8 + 2].copy_from_slice(&event.kind.0.to_ne_bytes());
+            key[8 + 2..].copy_from_slice(&ts_bytes);
+            cb(IndexKey {
                 db: self.index_pubkey_kind,
-                key: key.to_vec(),
-            });
+                key: &key,
+            })?;
         }
 
         // by tag value + date
+        let mut tag_key: Option<[u8; 8 + 4]> = None;
         for tag in &event.tags.0 {
             if tag.len() < 2 || tag[0].len() != 1 {
                 continue;
             }
 
-            let mut s: MumHasher = Default::default();
+            let key = tag_key.get_or_insert_with(|| {
+                let mut key = [0u8; 8 + 4];
+                key[8..].copy_from_slice(&ts_bytes);
+                key
+            });
+
+            if tag[1].len() == 64 {
+                if lowercase_hex::decode_to_slice(&tag[1][8 * 2..8 * 2 + 8 * 2], &mut key[0..8])
+                    .is_ok()
+                {
+                    cb(IndexKey {
+                        db: self.index_tag32,
+                        key: key,
+                    })?;
+                    continue;
+                }
+            }
+
+            let mut s: lmdb_store_hasher::AHasher = Default::default();
             tag[1].hash(&mut s);
             let hash = s.finish();
 
-            let mut key = [INDEX_TAG_PREFIX; 1 + 8 + 4];
-            key[1..1 + 8].copy_from_slice(hash.to_le_bytes().as_slice());
-            key[1 + 8..].copy_from_slice(&ts_bytes);
+            key[0..8].copy_from_slice(hash.to_ne_bytes().as_slice());
+            key[8..].copy_from_slice(&ts_bytes);
 
-            keys.push(IndexKey {
+            cb(IndexKey {
                 db: self.index_tag,
-                key: key.to_vec(),
-            });
+                key: key,
+            })?;
         }
 
-        keys
+        // by p-tag + k-tag (includes all variantions possible)
+        let mut kp_key: Option<[u8; 8 + 2 + 4]> = None;
+        for (k_tagname, p_tagname) in vec![("k", "p"), ("K", "p"), ("k", "P"), ("K", "P")] {
+            for k_tag in &event.tags.0 {
+                if k_tag.len() >= 2 && k_tag[0] == k_tagname {
+                    if let Ok(k) = k_tag[1].parse::<u16>() {
+                        let key = kp_key.get_or_insert_with(|| {
+                            let mut key = [0u8; 8 + 2 + 4];
+                            key[8 + 2..].copy_from_slice(&ts_bytes); // prefill date for all
+                            key
+                        });
+
+                        key[8..8 + 2].copy_from_slice(&k.to_ne_bytes()); // prefill "k" for these
+
+                        for p_tag in &event.tags.0 {
+                            if p_tag.len() >= 2 && p_tag[0] == p_tagname && p_tag[1].len() == 64 {
+                                if lowercase_hex::decode_to_slice(
+                                    &p_tag[1][8 * 2..8 * 2 + 8 * 2],
+                                    &mut key[0..8],
+                                )
+                                .is_ok()
+                                {
+                                    cb(IndexKey {
+                                        db: self.index_ptag_ktag,
+                                        key: key,
+                                    })?;
+                                }
+                            }
+                        }
+                    }
+
+                    // only do one k-tag per event
+                    break;
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
 #[derive(Debug)]
-struct IndexKey {
+struct IndexKey<'a> {
     db: Database<Bytes, U64<LittleEndian>, DefaultComparator>,
-    key: Vec<u8>,
+    key: &'a [u8],
 }
 
-const INDEX_CREATED_AT_PREFIX: u8 = 1;
-const INDEX_KIND_PREFIX: u8 = 2;
-const INDEX_PUBKEY_PREFIX: u8 = 3;
-const INDEX_PUBKEY_KIND_PREFIX: u8 = 4;
-const INDEX_TAG_PREFIX: u8 = 5;
-
+#[inline]
 fn inverted_timestamp_bytes(created_at: &Timestamp) -> [u8; 4] {
     let inverted_timestamp = 0xffffffff - created_at.0;
-    inverted_timestamp.to_be_bytes()
+    inverted_timestamp.to_ne_bytes()
 }
 
 #[cfg(test)]
 mod tests {
+    use rkyv::Deserialize;
+
     use super::*;
-    use crate::{event_template::EventTemplate, Filter, Kind, SecretKey, Timestamp};
-
-    #[test]
-    fn test_init_and_close() {
-        let temp_dir = std::env::temp_dir().join("lmdb_test_init");
-        let _ = std::fs::remove_dir_all(&temp_dir);
-
-        let store = LMDBStore::init(&temp_dir, None).expect("failed to initialize store");
-        store.close();
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
+    use crate::{event_template::EventTemplate, ArchivedKind, Filter, Kind, SecretKey, Timestamp};
 
     #[test]
     fn test_save_and_query_event() {
@@ -399,15 +447,18 @@ mod tests {
 
         // query all events
         let filter = Filter::new();
-        let results = store
-            .query_events(&filter, 100)
+        let mut results = Vec::new();
+        store
+            .query_events(&filter, 100, |event| {
+                results.push(rkyv::deserialize::<Event, rancor::Error>(event).unwrap());
+                Ok(())
+            })
             .expect("failed to query events");
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, event.id);
         assert_eq!(results[0].content, event.content);
 
-        store.close();
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
@@ -430,7 +481,6 @@ mod tests {
         let result = store.save_event(&event);
         assert!(matches!(result, Err(LMDBError::DuplicateEvent)));
 
-        store.close();
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
@@ -451,10 +501,14 @@ mod tests {
 
         // verify it exists
         let filter = Filter::new();
-        let results = store
-            .query_events(&filter, 100)
+        let mut count = 0;
+        store
+            .query_events(&filter, 100, |_| {
+                count += 1;
+                Ok(())
+            })
             .expect("failed to query events");
-        assert_eq!(results.len(), 1);
+        assert_eq!(count, 1);
 
         // delete the event
         store
@@ -462,39 +516,15 @@ mod tests {
             .expect("failed to delete event");
 
         // verify it's gone
-        let results = store
-            .query_events(&filter, 100)
+        let mut newcount = 0;
+        store
+            .query_events(&filter, 100, |_| {
+                newcount += 1;
+                Ok(())
+            })
             .expect("failed to query events");
-        assert_eq!(results.len(), 0);
+        assert_eq!(newcount, 0);
 
-        store.close();
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_count_events() {
-        let temp_dir = std::env::temp_dir().join("lmdb_test_count");
-        let _ = std::fs::remove_dir_all(&temp_dir);
-
-        let store = LMDBStore::init(&temp_dir, None).expect("failed to initialize store");
-
-        // save multiple events
-        for i in 0..5 {
-            let event = EventTemplate {
-                content: format!("{}", i),
-                created_at: Timestamp(i),
-                ..Default::default()
-            }
-            .finalize(&SecretKey::generate());
-            store.save_event(&event).expect("failed to save event");
-        }
-
-        // count all events
-        let filter = Filter::new();
-        let count = store.count_events(&filter).expect("failed to count events");
-        assert_eq!(count, 5);
-
-        store.close();
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
@@ -520,13 +550,16 @@ mod tests {
         // filter by kind 1
         let mut filter = Filter::new();
         filter.kinds = Some(vec![Kind(1)]);
-        let results = store
-            .query_events(&filter, 100)
+        let mut results = Vec::new();
+        store
+            .query_events(&filter, 100, |event| {
+                results.push(event.kind.0);
+                Ok(())
+            })
             .expect("failed to query events");
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].kind, Kind(1));
+        assert_eq!(results[0], 1);
 
-        store.close();
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

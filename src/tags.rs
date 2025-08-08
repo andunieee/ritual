@@ -6,7 +6,18 @@ use serde::{Deserialize, Serialize};
 pub type Tag = Vec<String>;
 
 /// collection of tags
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Deserialize,
+    rkyv::Serialize,
+)]
 pub struct Tags(pub Vec<Tag>);
 
 impl Tags {
