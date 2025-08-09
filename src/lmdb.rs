@@ -11,7 +11,6 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use thiserror::Error;
-use velcro::hash_map;
 
 #[derive(Error, Debug)]
 pub enum LMDBError {
@@ -228,6 +227,12 @@ impl LMDBStore {
     where
         F: FnMut(&ArchivedEvent) -> Result<()>,
     {
+        if let Some(tags) = filter.tags {
+            for (tag_name, tag_values) in tags {
+            if tag_name ==
+            }
+        }
+
         let iter = self.index_created_at.rev_iter(rtxn)?;
 
         for item in iter {
@@ -254,7 +259,7 @@ impl LMDBStore {
         filter.limit = Some(10);
 
         if with_address {
-            filter.tags = Some(hash_map!("d".to_string(): vec![event.tags.get_d()]));
+            filter.tags = Some(vec![("d".to_string(), vec![event.tags.get_d()])]);
         }
 
         let mut should_store = true;

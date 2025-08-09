@@ -15,6 +15,7 @@ pub enum IDError {
 pub enum SignatureError {
     #[error("invalid hex encoding")]
     InvalidHex(#[from] lowercase_hex::FromHexError),
+
     #[error("invalid signature length: expected 64 bytes, got {0}")]
     InvalidLength(usize),
 }
@@ -143,9 +144,6 @@ impl fmt::Display for Signature {
         write!(f, "<sig={}>", self.to_hex())
     }
 }
-
-/// map of tag names to values for filtering
-pub type TagMap = std::collections::HashMap<String, Vec<String>>;
 
 /// event kind type
 #[derive(

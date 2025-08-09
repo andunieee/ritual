@@ -1,5 +1,4 @@
 use thiserror::Error;
-use velcro::hash_map;
 
 use crate::{helpers::is_valid_relay_url, Event, Filter, Kind, PubKey, Tag, ID};
 
@@ -178,7 +177,7 @@ impl Pointer {
             Pointer::Address(p) => Filter {
                 kinds: Some(vec![p.kind]),
                 authors: Some(vec![p.pubkey]),
-                tags: Some(hash_map!("d".to_string(): vec![p.identifier.clone()])),
+                tags: Some(vec![("d".to_string(), vec![p.identifier.clone()])]),
                 ..Default::default()
             },
         }

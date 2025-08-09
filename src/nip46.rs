@@ -10,7 +10,6 @@ use slotmap::{new_key_type, Key, KeyData, SlotMap};
 use thiserror::Error;
 use tokio::sync::{oneshot, Mutex};
 use url::Url;
-use velcro::hash_map;
 
 #[derive(Debug, Serialize)]
 struct Request<'a> {
@@ -136,7 +135,7 @@ impl BunkerClient {
         tokio::spawn(async move {
             let filter = Filter {
                 kinds: Some(vec![Kind(24133)]),
-                tags: Some(hash_map!("#p".to_string(): vec![client_pubkey.to_hex()])),
+                tags: Some(vec![("#p".to_string(), vec![client_pubkey.to_hex()])]),
                 since: Some(Timestamp::now()),
                 ..Default::default()
             };
