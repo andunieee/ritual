@@ -32,6 +32,7 @@ chacha20poly1305 = "0.10.1"
 lmdb_store_hasher = { package = "ahash", version = "0.8.12" }
 itertools = "0.14.0"
 rkyv = "0.8.11"
+phf = { version = "0.12.1", features = ["macros"] }
 
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_arch = "wasm64")))'.dependencies]
 tokio = { version = "1.0", features = ["full"] }

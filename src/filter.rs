@@ -9,12 +9,14 @@ pub struct Filter {
     pub ids: Option<Vec<ID>>,
     pub kinds: Option<Vec<Kind>>,
     pub authors: Option<Vec<PubKey>>,
-    pub tags: Option<Vec<(String, Vec<String>)>>,
+    pub tags: Option<Vec<TagQuery>>,
     pub since: Option<Timestamp>,
     pub until: Option<Timestamp>,
     pub limit: Option<usize>,
     pub search: Option<String>,
 }
+
+pub type TagQuery = (String, Vec<String>);
 
 impl Serialize for Filter {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -92,7 +94,7 @@ impl<'de> Deserialize<'de> for Filter {
                 let mut until = None;
                 let mut limit = None;
                 let mut search = None;
-                let mut tags: Option<Vec<(String, Vec<String>)>> = None;
+                let mut tags: Option<Vec<TagQuery>> = None;
 
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
@@ -186,11 +188,6 @@ impl Filter {
         }
 
         true
-    }
-
-    /// clone the filter
-    pub fn clone_filter(&self) -> Self {
-        self.clone()
     }
 
     /// get the theoretical limit of events this filter could return

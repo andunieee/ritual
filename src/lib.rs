@@ -6,6 +6,7 @@
 //! including events, filters, relays, and connections.
 
 #![feature(test)]
+#![feature(new_range_api)]
 
 pub mod envelopes;
 pub mod event;
@@ -29,6 +30,7 @@ pub mod nip11;
 #[cfg(all(not(target_arch = "wasm32"), not(target_arch = "wasm64")))]
 pub mod server;
 
+mod database;
 mod finalizer;
 mod normalize;
 mod tags;

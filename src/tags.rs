@@ -1,6 +1,6 @@
-use std::fmt;
-
+use phf::phf_map;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 /// a single tag (array of strings)
 pub type Tag = Vec<String>;
