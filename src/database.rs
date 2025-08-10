@@ -7,7 +7,7 @@ pub type Result<T> = std::result::Result<T, DatabaseError>;
 #[derive(thiserror::Error, Debug)]
 pub enum DatabaseError {
     #[error("LMDB error: {0}")]
-    LMDB(#[from] heed::Error),
+    LMDB(String),
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
