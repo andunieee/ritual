@@ -1600,6 +1600,7 @@ dependencies = [
  "hyper-util",
  "itertools",
  "lazy_static",
+ "lmdb-master-sys",
  "lowercase-hex",
  "phf 0.12.1",
  "regex",

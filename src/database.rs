@@ -1,3 +1,4 @@
+use phf::phf_map;
 use rkyv::rancor;
 
 use crate::{event::ArchivedEvent, Event, Filter, ID};

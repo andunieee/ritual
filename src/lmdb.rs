@@ -6,101 +6,100 @@ use crate::database::{DatabaseError, EventDatabase, Result, TAGS_VALUE};
 use crate::filter::TagQuery;
 use crate::{event::ArchivedEvent, Event, Filter, ID};
 use crate::{Kind, PubKey};
-use lmdb_master_sys as ffi;
+use lmdb_master_sys as lmdb;
 use rkyv::rancor;
-use std::ffi::CString;
+use std::cmp;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
-use std::collections::HashSet;
-use std::ptr;
-use std::slice;
-use std::{cmp, fs};
 
 // macro to check LMDB return codes
-macro_rules! check_lmdb {
+macro_rules! check_lmdb_error {
     ($expr:expr) => {{
         let rc = $expr;
         if rc != 0 {
-            return Err(DatabaseError::LMDB(lmdb_error(rc)));
+            let err_cstr = lmdb::mdb_strerror(rc);
+            let err_str = if err_cstr.is_null() {
+                format!("Unknown LMDB error: {}", rc)
+            } else {
+                std::ffi::CStr::from_ptr(err_cstr)
+                    .to_string_lossy()
+                    .to_string()
+            };
+            return Err(DatabaseError::LMDB(err_str));
         }
-    }    };
+    }};
 }
 
-pub struct HeedEventDatabase {
+pub struct LMDBEventDatabase {
     pub path: String,
-    pub map_size: Option<usize>,
 
-    env: *mut ffi::MDB_env,
+    env: *mut lmdb::MDB_env,
 
     // indexes
-    events_by_id: ffi::MDB_dbi,
-    index_created_at: ffi::MDB_dbi,
-    index_kind: ffi::MDB_dbi,
-    index_pubkey: ffi::MDB_dbi,
-    index_pubkey_kind: ffi::MDB_dbi,
-    index_tag: ffi::MDB_dbi,
-    index_ptag_ktag: ffi::MDB_dbi,
+    events_by_id: lmdb::MDB_dbi,
+    index_created_at: lmdb::MDB_dbi,
+    index_kind: lmdb::MDB_dbi,
+    index_pubkey: lmdb::MDB_dbi,
+    index_pubkey_kind: lmdb::MDB_dbi,
+    index_tag: lmdb::MDB_dbi,
+    index_ptag_ktag: lmdb::MDB_dbi,
 }
 
-impl Drop for HeedEventDatabase {
+impl Drop for LMDBEventDatabase {
     fn drop(&mut self) {
         unsafe {
             if !self.env.is_null() {
-                ffi::mdb_env_close(self.env);
+                lmdb::mdb_env_close(self.env);
             }
         }
     }
 }
 
-impl HeedEventDatabase {
+impl LMDBEventDatabase {
     /// initialize the database and return a new instance
-    pub fn init(path: impl AsRef<Path>, map_size: Option<usize>) -> Result<Self> {
+    pub fn init(path: impl AsRef<Path>) -> Result<Self> {
         let path_str = path.as_ref().to_string_lossy().to_string();
 
         // create directory if it doesn't exist
-        fs::create_dir_all(&path_str)?;
+        std::fs::create_dir_all(&path_str)?;
 
         unsafe {
             // create environment
-            let mut env: *mut ffi::MDB_env = ptr::null_mut();
-            check_lmdb!(ffi::mdb_env_create(&mut env));
+            let mut env: *mut lmdb::MDB_env = core::ptr::null_mut();
+            check_lmdb_error!(lmdb::mdb_env_create(&mut env));
 
             // set max databases
-            check_lmdb!(ffi::mdb_env_set_maxdbs(env, 12));
+            check_lmdb_error!(lmdb::mdb_env_set_maxdbs(env, 12));
 
             // set max readers
-            check_lmdb!(ffi::mdb_env_set_maxreaders(env, 1000));
+            check_lmdb_error!(lmdb::mdb_env_set_maxreaders(env, 1000));
 
             // set map size
-            let size = map_size.unwrap_or(1 << 38); // ~273GB
-            check_lmdb!(ffi::mdb_env_set_mapsize(env, size));
+            check_lmdb_error!(lmdb::mdb_env_set_mapsize(env, 1 << 34));
 
             // open environment
-            let c_path = CString::new(path_str.clone()).unwrap();
-            check_lmdb!(ffi::mdb_env_open(
-                env,
-                c_path.as_ptr(),
-                ffi::MDB_NOSUBDIR,
-                0o644
-            ));
+            let c_path = std::ffi::CString::new(path_str.clone()).unwrap();
+            check_lmdb_error!(lmdb::mdb_env_open(env, c_path.as_ptr(), 0, 0o644));
 
             // create databases
-            let mut txn: *mut ffi::MDB_txn = ptr::null_mut();
-            check_lmdb!(ffi::mdb_txn_begin(env, ptr::null_mut(), 0, &mut txn));
+            let mut txn: *mut lmdb::MDB_txn = core::ptr::null_mut();
+            check_lmdb_error!(lmdb::mdb_txn_begin(env, core::ptr::null_mut(), 0, &mut txn));
 
-            let events_by_id = open_db(txn, "events")?;
-            let index_created_at = open_db(txn, "createdat")?;
-            let index_kind = open_db(txn, "kind")?;
-            let index_pubkey = open_db(txn, "pubkey")?;
-            let index_pubkey_kind = open_db(txn, "pubkey_kind")?;
-            let index_tag = open_db(txn, "tag")?;
-            let index_ptag_ktag = open_db(txn, "ptag_ktag")?;
+            let events_by_id = open_db(txn, "events", lmdb::MDB_INTEGERKEY)?;
+            let index_created_at =
+                open_db(txn, "createdat", lmdb::MDB_DUPSORT | lmdb::MDB_DUPFIXED)?;
+            let index_kind = open_db(txn, "kind", lmdb::MDB_DUPSORT | lmdb::MDB_DUPFIXED)?;
+            let index_pubkey = open_db(txn, "pubkey", lmdb::MDB_DUPSORT | lmdb::MDB_DUPFIXED)?;
+            let index_pubkey_kind =
+                open_db(txn, "pubkey_kind", lmdb::MDB_DUPSORT | lmdb::MDB_DUPFIXED)?;
+            let index_tag = open_db(txn, "tag", lmdb::MDB_DUPSORT | lmdb::MDB_DUPFIXED)?;
+            let index_ptag_ktag =
+                open_db(txn, "ptag_ktag", lmdb::MDB_DUPSORT | lmdb::MDB_DUPFIXED)?;
 
-            check_lmdb!(ffi::mdb_txn_commit(txn));
+            check_lmdb_error!(lmdb::mdb_txn_commit(txn));
 
             Ok(Self {
                 path: path_str,
-                map_size,
                 env,
                 events_by_id,
                 index_created_at,
@@ -114,36 +113,48 @@ impl HeedEventDatabase {
     }
 
     /// internal save function
-    fn save_internal(&self, txn: *mut ffi::MDB_txn, event: &Event) -> Result<()> {
+    fn save_internal(&self, txn: *mut lmdb::MDB_txn, event: &Event) -> Result<()> {
         unsafe {
             let event_data = rkyv::to_bytes::<rancor::Error>(event)?;
             let id_u64 = event.id.as_u64_lossy();
             let id_bytes = id_u64.to_ne_bytes();
 
             // save raw event
-            let key = ffi::MDB_val {
+            let mut key = lmdb::MDB_val {
                 mv_size: id_bytes.len(),
                 mv_data: id_bytes.as_ptr() as *mut _,
             };
-            let data = ffi::MDB_val {
+            let mut data = lmdb::MDB_val {
                 mv_size: event_data.len(),
                 mv_data: event_data.as_ptr() as *mut _,
             };
-            check_lmdb!(ffi::mdb_put(txn, self.events_by_id, &key, &data, 0));
+            check_lmdb_error!(lmdb::mdb_put(
+                txn,
+                self.events_by_id,
+                &mut key as *mut lmdb::MDB_val,
+                &mut data as *mut lmdb::MDB_val,
+                0
+            ));
 
             // save indexes
             self.get_index_keys_for_event(
                 &rkyv::from_bytes_unchecked::<Event, rancor::Error>(&event_data)?,
                 |index_key| {
-                    let key = ffi::MDB_val {
+                    let mut key = lmdb::MDB_val {
                         mv_size: index_key.key.len(),
                         mv_data: index_key.key.as_ptr() as *mut _,
                     };
-                    let data = ffi::MDB_val {
+                    let mut data = lmdb::MDB_val {
                         mv_size: id_bytes.len(),
                         mv_data: id_bytes.as_ptr() as *mut _,
                     };
-                    check_lmdb!(ffi::mdb_put(txn, index_key.db, &key, &data, 0));
+                    check_lmdb_error!(lmdb::mdb_put(
+                        txn,
+                        index_key.db,
+                        &mut key as *mut lmdb::MDB_val,
+                        &mut data as *mut lmdb::MDB_val,
+                        0
+                    ));
                     Ok(())
                 },
             )?;
@@ -153,159 +164,182 @@ impl HeedEventDatabase {
     }
 
     /// internal delete function
-    fn delete_internal(&self, txn: *mut ffi::MDB_txn, id: u64) -> Result<()> {
+    fn delete_internal(&self, txn: *mut lmdb::MDB_txn, id: u64) -> Result<()> {
         unsafe {
             let id_bytes = id.to_ne_bytes();
-            let key = ffi::MDB_val {
+            let mut key = lmdb::MDB_val {
                 mv_size: id_bytes.len(),
                 mv_data: id_bytes.as_ptr() as *mut _,
             };
 
             // get the event data to compute indexes
-            let mut data = ffi::MDB_val {
+            let mut data = lmdb::MDB_val {
                 mv_size: 0,
-                mv_data: ptr::null_mut(),
+                mv_data: core::ptr::null_mut(),
             };
-            let rc = ffi::mdb_get(txn, self.events_by_id, &key, &mut data);
-            if rc == ffi::MDB_NOTFOUND {
+            let rc = lmdb::mdb_get(
+                txn,
+                self.events_by_id,
+                &mut key as *mut lmdb::MDB_val,
+                &mut data as *mut lmdb::MDB_val,
+            );
+            if rc == lmdb::MDB_NOTFOUND {
                 return Err(DatabaseError::EventNotFound);
             }
-            check_lmdb!(rc);
+            check_lmdb_error!(rc);
 
-            let raw = slice::from_raw_parts(data.mv_data as *const u8, data.mv_size);
+            let raw = std::slice::from_raw_parts(data.mv_data as *const u8, data.mv_size);
             let event = rkyv::from_bytes_unchecked::<Event, rancor::Error>(raw)?;
 
             // delete all indexes
             self.get_index_keys_for_event(&event, |index_key| {
-                let key = ffi::MDB_val {
+                let mut key = lmdb::MDB_val {
                     mv_size: index_key.key.len(),
                     mv_data: index_key.key.as_ptr() as *mut _,
                 };
-                check_lmdb!(ffi::mdb_del(txn, index_key.db, &key, ptr::null()));
+                check_lmdb_error!(lmdb::mdb_del(
+                    txn,
+                    index_key.db,
+                    &mut key as *mut lmdb::MDB_val,
+                    core::ptr::null_mut()
+                ));
                 Ok(())
             })?;
 
             // delete raw event
-            let key = ffi::MDB_val {
+            let mut key = lmdb::MDB_val {
                 mv_size: id_bytes.len(),
                 mv_data: id_bytes.as_ptr() as *mut _,
             };
-            check_lmdb!(ffi::mdb_del(txn, self.events_by_id, &key, ptr::null()));
+            check_lmdb_error!(lmdb::mdb_del(
+                txn,
+                self.events_by_id,
+                &mut key as *mut lmdb::MDB_val,
+                core::ptr::null_mut()
+            ));
         }
 
         Ok(())
     }
 
-    fn execute<F>(&self, txn: *mut ffi::MDB_txn, queries: Vec<Query>, mut cb: F) -> Result<()>
+    fn execute<F>(&self, txn: *mut lmdb::MDB_txn, queries: Vec<Query>, mut cb: F) -> Result<()>
     where
         F: FnMut(&ArchivedEvent) -> Result<()>,
     {
         unsafe {
             let mut processed_ids = std::collections::HashSet::new();
             let mut total_count = 0;
-            
+
             for query in queries {
                 if total_count >= query.limit {
                     break;
                 }
-                
-                let mut cursor: *mut ffi::MDB_cursor = ptr::null_mut();
-                check_lmdb!(ffi::mdb_cursor_open(txn, query.db, &mut cursor));
-                
+
+                let mut cursor: *mut lmdb::MDB_cursor = core::ptr::null_mut();
+                check_lmdb_error!(lmdb::mdb_cursor_open(txn, query.db, &mut cursor));
+
                 for sub_query in query.sub_queries {
                     if total_count >= query.limit {
                         break;
                     }
-                    
+
                     // set cursor to starting point
-                    let mut key = ffi::MDB_val {
+                    let mut key = lmdb::MDB_val {
                         mv_size: sub_query.len(),
                         mv_data: sub_query.as_ptr() as *mut _,
                     };
-                    let mut data = ffi::MDB_val {
+                    let mut data = lmdb::MDB_val {
                         mv_size: 0,
-                        mv_data: ptr::null_mut(),
+                        mv_data: core::ptr::null_mut(),
                     };
-                    
+
                     // position cursor at or after the key
-                    let mut rc = ffi::mdb_cursor_get(cursor, &mut key, &mut data, ffi::MDB_SET_RANGE);
-                    
+                    let mut rc =
+                        lmdb::mdb_cursor_get(cursor, &mut key, &mut data, lmdb::MDB_SET_RANGE);
+
                     while rc == 0 && total_count < query.limit {
                         // check if we've gone past the until timestamp
                         if key.mv_size >= 4 {
-                            let key_bytes = slice::from_raw_parts(key.mv_data as *const u8, key.mv_size);
+                            let key_bytes =
+                                std::slice::from_raw_parts(key.mv_data as *const u8, key.mv_size);
                             let timestamp_bytes = &key_bytes[key_bytes.len() - 4..];
                             if timestamp_bytes > query.until.as_slice() {
                                 break;
                             }
                         }
-                        
+
                         // get the event id from the data
                         let id = u64::from_ne_bytes(
-                            slice::from_raw_parts(data.mv_data as *const u8, data.mv_size)
+                            std::slice::from_raw_parts(data.mv_data as *const u8, data.mv_size)
                                 .try_into()
                                 .unwrap_or([0u8; 8]),
                         );
-                        
+
                         // skip if we've already processed this event
                         if processed_ids.contains(&id) {
-                            rc = ffi::mdb_cursor_get(cursor, &mut key, &mut data, ffi::MDB_NEXT);
+                            rc = lmdb::mdb_cursor_get(cursor, &mut key, &mut data, lmdb::MDB_NEXT);
                             continue;
                         }
-                        
+
                         // get the actual event
                         let id_bytes = id.to_ne_bytes();
-                        let event_key = ffi::MDB_val {
+                        let mut event_key = lmdb::MDB_val {
                             mv_size: id_bytes.len(),
                             mv_data: id_bytes.as_ptr() as *mut _,
                         };
-                        let mut event_data = ffi::MDB_val {
+                        let mut event_data = lmdb::MDB_val {
                             mv_size: 0,
-                            mv_data: ptr::null_mut(),
+                            mv_data: core::ptr::null_mut(),
                         };
-                        
-                        if ffi::mdb_get(txn, self.events_by_id, &event_key, &mut event_data) == 0 {
-                            let raw = slice::from_raw_parts(
+
+                        if lmdb::mdb_get(
+                            txn,
+                            self.events_by_id,
+                            &mut event_key as *mut lmdb::MDB_val,
+                            &mut event_data as *mut lmdb::MDB_val,
+                        ) == 0
+                        {
+                            let raw = std::slice::from_raw_parts(
                                 event_data.mv_data as *const u8,
                                 event_data.mv_size,
                             );
                             let event: &ArchivedEvent = rkyv::access_unchecked(raw);
-                            
+
                             // apply extra filters
                             let mut matches = true;
-                            
+
                             if let Some(ref extra_kinds) = query.extra_kinds {
                                 if !extra_kinds.iter().any(|k| k.0 == event.kind.0) {
                                     matches = false;
                                 }
                             }
-                            
+
                             if matches && query.extra_authors.is_some() {
                                 let extra_authors = query.extra_authors.as_ref().unwrap();
-                                if !extra_authors.iter().any(|a| a.as_u64_lossy() == event.pubkey.as_u64_lossy()) {
+                                if !extra_authors.iter().any(|a| a.0 == event.pubkey.0) {
                                     matches = false;
                                 }
                             }
-                            
+
                             if matches && query.extra_tag.is_some() {
                                 // TODO: implement tag matching
                             }
-                            
+
                             if matches {
                                 processed_ids.insert(id);
                                 cb(event)?;
                                 total_count += 1;
                             }
                         }
-                        
-                        rc = ffi::mdb_cursor_get(cursor, &mut key, &mut data, ffi::MDB_NEXT);
+
+                        rc = lmdb::mdb_cursor_get(cursor, &mut key, &mut data, lmdb::MDB_NEXT);
                     }
                 }
-                
-                ffi::mdb_cursor_close(cursor);
+
+                lmdb::mdb_cursor_close(cursor);
             }
         }
-        
+
         Ok(())
     }
 
@@ -364,7 +398,7 @@ impl HeedEventDatabase {
 
             if let Some(tag) = tags.get(0) {
                 // use the first tag as the extra tag filter
-                extra_tag.insert(tag.clone());
+                let _ = extra_tag.insert(tag.clone());
             }
         }
 
@@ -505,9 +539,7 @@ impl HeedEventDatabase {
                 }
             }
 
-                    let mut key = vec![0u8; 8 + 4 + 4];
-                        let mut key = vec![0u8; 8 + 4];
-                        let mut key = vec![0u8; 4 + 4];
+            let mut key = [0u8; 8 + 4];
             let mut s: lmdb_store_hasher::AHasher = Default::default();
             tag[1].hash(&mut s);
             let hash = s.finish();
@@ -517,7 +549,7 @@ impl HeedEventDatabase {
 
             cb(IndexKey {
                 db: self.index_tag,
-                key: key,
+                key: &key,
             })?;
         }
 
@@ -562,30 +594,41 @@ impl HeedEventDatabase {
     }
 }
 
-impl EventDatabase for HeedEventDatabase {
+impl EventDatabase for LMDBEventDatabase {
     fn save_event(&self, event: &Event) -> Result<()> {
         unsafe {
-            let mut txn: *mut ffi::MDB_txn = ptr::null_mut();
-            check_lmdb!(ffi::mdb_txn_begin(self.env, ptr::null_mut(), 0, &mut txn));
+            let mut txn: *mut lmdb::MDB_txn = core::ptr::null_mut();
+            check_lmdb_error!(lmdb::mdb_txn_begin(
+                self.env,
+                core::ptr::null_mut(),
+                0,
+                &mut txn
+            ));
 
             // check if we already have this id
             let id_bytes = event.id.as_u64_lossy().to_ne_bytes();
-            let key = ffi::MDB_val {
+            let mut key = lmdb::MDB_val {
                 mv_size: id_bytes.len(),
                 mv_data: id_bytes.as_ptr() as *mut _,
             };
-            let mut data = ffi::MDB_val {
+            let mut data = lmdb::MDB_val {
                 mv_size: 0,
-                mv_data: ptr::null_mut(),
+                mv_data: core::ptr::null_mut(),
             };
 
-            if ffi::mdb_get(txn, self.events_by_id, &key, &mut data) == 0 {
-                ffi::mdb_txn_abort(txn);
+            if lmdb::mdb_get(
+                txn,
+                self.events_by_id,
+                &mut key as *mut lmdb::MDB_val,
+                &mut data as *mut lmdb::MDB_val,
+            ) == 0
+            {
+                lmdb::mdb_txn_abort(txn);
                 return Err(DatabaseError::DuplicateEvent);
             }
 
             self.save_internal(txn, event)?;
-            check_lmdb!(ffi::mdb_txn_commit(txn));
+            check_lmdb_error!(lmdb::mdb_txn_commit(txn));
         }
 
         Ok(())
@@ -593,8 +636,13 @@ impl EventDatabase for HeedEventDatabase {
 
     fn replace_event(&self, event: &Event, with_address: bool) -> Result<()> {
         unsafe {
-            let mut wtxn: *mut ffi::MDB_txn = ptr::null_mut();
-            check_lmdb!(ffi::mdb_txn_begin(self.env, ptr::null_mut(), 0, &mut wtxn));
+            let mut wtxn: *mut lmdb::MDB_txn = core::ptr::null_mut();
+            check_lmdb_error!(lmdb::mdb_txn_begin(
+                self.env,
+                core::ptr::null_mut(),
+                0,
+                &mut wtxn
+            ));
 
             // create filter to find existing events
             let mut filter = Filter::new();
@@ -609,11 +657,11 @@ impl EventDatabase for HeedEventDatabase {
             let mut should_store = true;
 
             // find and delete older events
-            let mut rtxn: *mut ffi::MDB_txn = ptr::null_mut();
-            check_lmdb!(ffi::mdb_txn_begin(
+            let mut rtxn: *mut lmdb::MDB_txn = core::ptr::null_mut();
+            check_lmdb_error!(lmdb::mdb_txn_begin(
                 self.env,
-                ptr::null_mut(),
-                ffi::MDB_RDONLY,
+                core::ptr::null_mut(),
+                lmdb::MDB_RDONLY,
                 &mut rtxn
             ));
 
@@ -632,13 +680,13 @@ impl EventDatabase for HeedEventDatabase {
                 Ok(())
             })?;
 
-            ffi::mdb_txn_abort(rtxn);
+            lmdb::mdb_txn_abort(rtxn);
 
             if should_store {
                 self.save_internal(wtxn, event)?;
             }
 
-            check_lmdb!(ffi::mdb_txn_commit(wtxn));
+            check_lmdb_error!(lmdb::mdb_txn_commit(wtxn));
         }
         Ok(())
     }
@@ -650,17 +698,17 @@ impl EventDatabase for HeedEventDatabase {
         unsafe {
             let mut queries: Vec<Query> = Vec::with_capacity(64);
 
-            let mut txn: *mut ffi::MDB_txn = ptr::null_mut();
-            check_lmdb!(ffi::mdb_txn_begin(
+            let mut txn: *mut lmdb::MDB_txn = core::ptr::null_mut();
+            check_lmdb_error!(lmdb::mdb_txn_begin(
                 self.env,
-                ptr::null_mut(),
-                ffi::MDB_RDONLY,
+                core::ptr::null_mut(),
+                lmdb::MDB_RDONLY,
                 &mut txn
             ));
 
             for filter in filters {
                 if filter.search.is_some() {
-                    ffi::mdb_txn_abort(txn);
+                    lmdb::mdb_txn_abort(txn);
                     return Err(DatabaseError::InvalidFilter(
                         "search not supported".to_string(),
                     ));
@@ -670,18 +718,24 @@ impl EventDatabase for HeedEventDatabase {
                 if let Some(ids) = &filter.ids {
                     for id in ids {
                         let id_bytes = id.as_u64_lossy().to_ne_bytes();
-                        let key = ffi::MDB_val {
+                        let mut key = lmdb::MDB_val {
                             mv_size: id_bytes.len(),
                             mv_data: id_bytes.as_ptr() as *mut _,
                         };
-                        let mut data = ffi::MDB_val {
+                        let mut data = lmdb::MDB_val {
                             mv_size: 0,
-                            mv_data: ptr::null_mut(),
+                            mv_data: core::ptr::null_mut(),
                         };
 
-                        if ffi::mdb_get(txn, self.events_by_id, &key, &mut data) == 0 {
+                        if lmdb::mdb_get(
+                            txn,
+                            self.events_by_id,
+                            &mut key as *mut lmdb::MDB_val,
+                            &mut data as *mut lmdb::MDB_val,
+                        ) == 0
+                        {
                             let raw =
-                                slice::from_raw_parts(data.mv_data as *const u8, data.mv_size);
+                                std::slice::from_raw_parts(data.mv_data as *const u8, data.mv_size);
                             let event = rkyv::access_unchecked::<ArchivedEvent>(raw);
                             cb(event)?;
                         }
@@ -706,54 +760,51 @@ impl EventDatabase for HeedEventDatabase {
                 })?;
             }
 
-            ffi::mdb_txn_abort(txn);
+            lmdb::mdb_txn_abort(txn);
         }
         Ok(())
     }
 
     fn delete_event(&self, id: &ID) -> Result<()> {
         unsafe {
-            let mut txn: *mut ffi::MDB_txn = ptr::null_mut();
-            check_lmdb!(ffi::mdb_txn_begin(self.env, ptr::null_mut(), 0, &mut txn));
+            let mut txn: *mut lmdb::MDB_txn = core::ptr::null_mut();
+            check_lmdb_error!(lmdb::mdb_txn_begin(
+                self.env,
+                core::ptr::null_mut(),
+                0,
+                &mut txn
+            ));
             self.delete_internal(txn, id.as_u64_lossy())?;
-            check_lmdb!(ffi::mdb_txn_commit(txn));
+            check_lmdb_error!(lmdb::mdb_txn_commit(txn));
         }
         Ok(())
     }
 }
 
 // helper function to open a database
-fn open_db(txn: *mut ffi::MDB_txn, name: &str) -> Result<ffi::MDB_dbi> {
+fn open_db(txn: *mut lmdb::MDB_txn, name: &str, flags: u32) -> Result<lmdb::MDB_dbi> {
     unsafe {
-        let mut dbi: ffi::MDB_dbi = 0;
-        let c_name = CString::new(name).unwrap();
-        check_lmdb!(ffi::mdb_dbi_open(txn, c_name.as_ptr(), ffi::MDB_CREATE, &mut dbi));
+        let mut dbi: lmdb::MDB_dbi = 0;
+        let c_name = std::ffi::CString::new(name).unwrap();
+        check_lmdb_error!(lmdb::mdb_dbi_open(
+            txn,
+            c_name.as_ptr(),
+            lmdb::MDB_CREATE | flags,
+            &mut dbi
+        ));
         Ok(dbi)
-    }
-}
-
-fn lmdb_error(rc: i32) -> String {
-    unsafe {
-        let err_str = ffi::mdb_strerror(rc);
-        if err_str.is_null() {
-            format!("Unknown LMDB error: {}", rc)
-        } else {
-            std::ffi::CStr::from_ptr(err_str)
-                .to_string_lossy()
-                .to_string()
-        }
     }
 }
 
 #[derive(Debug)]
 struct IndexKey<'a> {
-    db: ffi::MDB_dbi,
+    db: lmdb::MDB_dbi,
     key: &'a [u8],
 }
 
 #[derive(Debug)]
 struct Query {
-    db: ffi::MDB_dbi,
+    db: lmdb::MDB_dbi,
 
     // this is the main index we'll use, the values are the starting points
     // the prefix should be just the initial bytes (anything besides the last 4 bytes)
@@ -781,7 +832,7 @@ mod tests {
         let temp_dir = std::env::temp_dir().join("lmdb_test_save_query");
         let _ = std::fs::remove_dir_all(&temp_dir);
 
-        let store = HeedEventDatabase::init(&temp_dir, None).expect("failed to initialize store");
+        let store = LMDBEventDatabase::init(&temp_dir).expect("failed to initialize store");
         let event = EventTemplate {
             content: "nothing".to_string(),
             ..Default::default()
@@ -813,7 +864,7 @@ mod tests {
         let temp_dir = std::env::temp_dir().join("lmdb_test_duplicate");
         let _ = std::fs::remove_dir_all(&temp_dir);
 
-        let store = HeedEventDatabase::init(&temp_dir, None).expect("failed to initialize store");
+        let store = LMDBEventDatabase::init(&temp_dir).expect("failed to initialize store");
         let event = EventTemplate {
             content: "nothing".to_string(),
             ..Default::default()
@@ -835,7 +886,7 @@ mod tests {
         let temp_dir = std::env::temp_dir().join("lmdb_test_delete");
         let _ = std::fs::remove_dir_all(&temp_dir);
 
-        let store = HeedEventDatabase::init(&temp_dir, None).expect("failed to initialize store");
+        let store = LMDBEventDatabase::init(&temp_dir).expect("failed to initialize store");
         let event = EventTemplate {
             content: "nothing".to_string(),
             ..Default::default()
@@ -879,7 +930,7 @@ mod tests {
         let temp_dir = std::env::temp_dir().join("lmdb_test_filter_kind");
         let _ = std::fs::remove_dir_all(&temp_dir);
 
-        let store = HeedEventDatabase::init(&temp_dir, None).expect("failed to initialize store");
+        let store = LMDBEventDatabase::init(&temp_dir).expect("failed to initialize store");
 
         // save events with different kinds
         for i in 0..3 {
