@@ -9,29 +9,12 @@ use itertools::iproduct;
 use lmdb_master_sys as lmdb;
 use rkyv::rancor;
 use rkyv::rend::u16_le;
+use std::cell::Cell;
 use std::cmp::{self};
+use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::atomic::AtomicUsize;
-
-// macro to check LMDB return codes
-macro_rules! check_lmdb_error {
-    ($expr:expr) => {{
-        let rc = $expr;
-        if rc != 0 {
-            let err_cstr = lmdb::mdb_strerror(rc);
-            let err_str = if err_cstr.is_null() {
-                format!("Unknown LMDB error: {}", rc)
-            } else {
-                std::ffi::CStr::from_ptr(err_cstr)
-                    .to_string_lossy()
-                    .to_string()
-            };
-            return Err(DatabaseError::LMDB(err_str));
-        }
-    }};
-}
 
 pub struct LMDBEventDatabase {
     pub path: String,
@@ -40,7 +23,7 @@ pub struct LMDBEventDatabase {
 
     // indexes
     events_by_id: lmdb::MDB_dbi,
-    index_created_at: lmdb::MDB_dbi,
+    index_timestamp: lmdb::MDB_dbi,
     index_kind: lmdb::MDB_dbi,
     index_pubkey: lmdb::MDB_dbi,
     index_pubkey_kind: lmdb::MDB_dbi,
@@ -69,28 +52,28 @@ impl LMDBEventDatabase {
         unsafe {
             // create environment
             let mut env: *mut lmdb::MDB_env = core::ptr::null_mut();
-            check_lmdb_error!(lmdb::mdb_env_create(&mut env));
+            check_lmdb_error(lmdb::mdb_env_create(&mut env))?;
 
             // set max databases
-            check_lmdb_error!(lmdb::mdb_env_set_maxdbs(env, 12));
+            check_lmdb_error(lmdb::mdb_env_set_maxdbs(env, 12))?;
 
             // set max readers
-            check_lmdb_error!(lmdb::mdb_env_set_maxreaders(env, 1000));
+            check_lmdb_error(lmdb::mdb_env_set_maxreaders(env, 1000))?;
 
             // set map size
-            check_lmdb_error!(lmdb::mdb_env_set_mapsize(env, 1 << 34));
+            check_lmdb_error(lmdb::mdb_env_set_mapsize(env, 1 << 34))?;
 
             // open environment
             let c_path = std::ffi::CString::new(path_str.clone()).unwrap();
-            check_lmdb_error!(lmdb::mdb_env_open(env, c_path.as_ptr(), 0, 0o644));
+            check_lmdb_error(lmdb::mdb_env_open(env, c_path.as_ptr(), 0, 0o644))?;
 
             // create databases
             let mut txn: *mut lmdb::MDB_txn = core::ptr::null_mut();
-            check_lmdb_error!(lmdb::mdb_txn_begin(env, core::ptr::null_mut(), 0, &mut txn));
+            check_lmdb_error(lmdb::mdb_txn_begin(env, core::ptr::null_mut(), 0, &mut txn))?;
 
             let events_by_id = open_db(txn, "events", lmdb::MDB_INTEGERKEY)?;
-            let index_created_at =
-                open_db(txn, "createdat", lmdb::MDB_DUPSORT | lmdb::MDB_DUPFIXED)?;
+            let index_timestamp =
+                open_db(txn, "timestamp", lmdb::MDB_DUPSORT | lmdb::MDB_DUPFIXED)?;
             let index_kind = open_db(txn, "kind", lmdb::MDB_DUPSORT | lmdb::MDB_DUPFIXED)?;
             let index_pubkey = open_db(txn, "pubkey", lmdb::MDB_DUPSORT | lmdb::MDB_DUPFIXED)?;
             let index_pubkey_kind =
@@ -99,13 +82,20 @@ impl LMDBEventDatabase {
             let index_ptag_ktag =
                 open_db(txn, "ptag_ktag", lmdb::MDB_DUPSORT | lmdb::MDB_DUPFIXED)?;
 
-            check_lmdb_error!(lmdb::mdb_txn_commit(txn));
+            lmdb::mdb_set_compare(txn, index_timestamp, Some(strfry_uint32_comparator));
+            lmdb::mdb_set_compare(txn, index_kind, Some(strfry_uint32_comparator));
+            lmdb::mdb_set_compare(txn, index_pubkey, Some(strfry_uint32_comparator));
+            lmdb::mdb_set_compare(txn, index_pubkey_kind, Some(strfry_uint32_comparator));
+            lmdb::mdb_set_compare(txn, index_tag, Some(strfry_uint32_comparator));
+            lmdb::mdb_set_compare(txn, index_ptag_ktag, Some(strfry_uint32_comparator));
+
+            check_lmdb_error(lmdb::mdb_txn_commit(txn))?;
 
             Ok(Self {
                 path: path_str,
                 env,
                 events_by_id,
-                index_created_at,
+                index_timestamp,
                 index_kind,
                 index_pubkey,
                 index_pubkey_kind,
@@ -131,13 +121,13 @@ impl LMDBEventDatabase {
                 mv_size: event_data.len(),
                 mv_data: event_data.as_ptr() as *mut _,
             };
-            check_lmdb_error!(lmdb::mdb_put(
+            check_lmdb_error(lmdb::mdb_put(
                 txn,
                 self.events_by_id,
                 &mut key as *mut lmdb::MDB_val,
                 &mut data as *mut lmdb::MDB_val,
-                0
-            ));
+                0,
+            ))?;
 
             // save indexes
             self.get_index_keys_for_event(
@@ -151,13 +141,13 @@ impl LMDBEventDatabase {
                         mv_size: id_bytes.len(),
                         mv_data: id_bytes.as_ptr() as *mut _,
                     };
-                    check_lmdb_error!(lmdb::mdb_put(
+                    check_lmdb_error(lmdb::mdb_put(
                         txn,
                         index_key.db,
                         &mut key as *mut lmdb::MDB_val,
                         &mut data as *mut lmdb::MDB_val,
-                        0
-                    ));
+                        0,
+                    ))?;
                     Ok(())
                 },
             )?;
@@ -189,7 +179,7 @@ impl LMDBEventDatabase {
             if rc == lmdb::MDB_NOTFOUND {
                 return Err(DatabaseError::EventNotFound);
             }
-            check_lmdb_error!(rc);
+            check_lmdb_error(rc)?;
 
             let raw = std::slice::from_raw_parts(data.mv_data as *const u8, data.mv_size);
             let event = rkyv::from_bytes_unchecked::<Event, rancor::Error>(raw)?;
@@ -200,12 +190,12 @@ impl LMDBEventDatabase {
                     mv_size: index_key.key.len(),
                     mv_data: index_key.key.as_ptr() as *mut _,
                 };
-                check_lmdb_error!(lmdb::mdb_del(
+                check_lmdb_error(lmdb::mdb_del(
                     txn,
                     index_key.db,
                     &mut key as *mut lmdb::MDB_val,
-                    core::ptr::null_mut()
-                ));
+                    core::ptr::null_mut(),
+                ))?;
                 Ok(())
             })?;
 
@@ -214,12 +204,12 @@ impl LMDBEventDatabase {
                 mv_size: id_bytes.len(),
                 mv_data: id_bytes.as_ptr() as *mut _,
             };
-            check_lmdb_error!(lmdb::mdb_del(
+            check_lmdb_error(lmdb::mdb_del(
                 txn,
                 self.events_by_id,
                 &mut key as *mut lmdb::MDB_val,
-                core::ptr::null_mut()
-            ));
+                core::ptr::null_mut(),
+            ))?;
         }
 
         Ok(())
@@ -236,11 +226,11 @@ impl LMDBEventDatabase {
             for query in queries {
                 let rc_query = Rc::new(query);
 
-                for sub_query in &rc_query.sub_queries {
+                for (i, sub_query) in rc_query.sub_queries.iter().enumerate() {
                     let prefix = &sub_query[0..sub_query.len() - 4];
 
                     let mut cursor: *mut lmdb::MDB_cursor = core::ptr::null_mut();
-                    check_lmdb_error!(lmdb::mdb_cursor_open(rtxn, rc_query.db, &mut cursor));
+                    check_lmdb_error(lmdb::mdb_cursor_open(rtxn, rc_query.db, &mut cursor))?;
 
                     // set cursor to starting point
                     let mut key = lmdb::MDB_val {
@@ -251,28 +241,33 @@ impl LMDBEventDatabase {
                         mv_size: 0,
                         mv_data: core::ptr::null_mut(),
                     };
+
                     // position cursor at or after the key
-                    let _ = lmdb::mdb_cursor_get(cursor, &mut key, &mut val, lmdb::MDB_SET_RANGE);
+                    let o = lmdb::mdb_cursor_get(cursor, &mut key, &mut val, lmdb::MDB_SET_RANGE);
 
                     // if it went after, go back one
-                    if !std::slice::from_raw_parts(key.mv_data as *const u8, key.mv_size)
-                        .starts_with(prefix)
+                    if o == lmdb::MDB_NOTFOUND
+                        || !std::slice::from_raw_parts(key.mv_data as *const u8, key.mv_size)
+                            .starts_with(prefix)
                     {
-                        check_lmdb_error!(lmdb::mdb_cursor_get(
-                            cursor,
-                            &mut key,
-                            core::ptr::null_mut(),
-                            lmdb::MDB_PREV,
-                        ));
+                        let o = lmdb::mdb_cursor_get(cursor, &mut key, &mut val, lmdb::MDB_PREV);
+                        if o == lmdb::MDB_NOTFOUND {
+                            // it's ok, just skip this cursor
+                            continue;
+                        } else {
+                            check_lmdb_error(o)?;
+                        }
                     }
 
                     // use this cursor
                     let mut c = Cursor {
+                        i,
+
                         cursor,
                         query: rc_query.clone(),
                         last_read_timestamp: u32::MAX,
 
-                        pulled: Vec::with_capacity(16),
+                        pulled: VecDeque::with_capacity(64),
 
                         last_key: key,
                         last_val: val,
@@ -281,7 +276,7 @@ impl LMDBEventDatabase {
                     };
 
                     // in the beginning, pull 16 entries from each cursor
-                    c.pull();
+                    c.fetch();
 
                     cursors.push(c);
                 }
@@ -299,17 +294,13 @@ impl LMDBEventDatabase {
                     // reading from db and collecting events
                     for c in &mut cursors {
                         for _ in 0..c.pulled.len() {
-                            if c.query
-                                .total_sent
-                                .load(std::sync::atomic::Ordering::Relaxed)
-                                >= c.query.limit
-                            {
+                            if c.query.total_sent.get() >= c.query.limit {
                                 c.done = true;
                                 break;
                             }
 
                             // we'll always be collecting from the front of the vec
-                            if c.pulled[0].0 > cutpoint {
+                            if c.pulled[0].0 < cutpoint {
                                 // from this point on we stop collecting
                                 break;
                             }
@@ -325,12 +316,12 @@ impl LMDBEventDatabase {
                                 mv_size: 0,
                                 mv_data: core::ptr::null_mut(),
                             };
-                            check_lmdb_error!(lmdb::mdb_get(
+                            check_lmdb_error(lmdb::mdb_get(
                                 rtxn,
                                 self.events_by_id,
                                 &mut event_key as *mut lmdb::MDB_val,
                                 &mut event_data as *mut lmdb::MDB_val,
-                            ));
+                            ))?;
                             let raw = std::slice::from_raw_parts(
                                 event_data.mv_data as *const u8,
                                 event_data.mv_size,
@@ -338,7 +329,7 @@ impl LMDBEventDatabase {
                             let event: &ArchivedEvent = rkyv::access_unchecked(raw);
 
                             // remove this from pulled list as it has been collected
-                            c.pulled.swap_remove(0);
+                            c.pulled.pop_front();
 
                             // check if this event passes the other filters before actually sending it
                             if let Some(extra_kinds) = &c.query.extra_kinds {
@@ -362,6 +353,8 @@ impl LMDBEventDatabase {
                                         }
                                     }
                                 }
+                            } else {
+                                tags_ok = true;
                             }
                             if !tags_ok {
                                 continue;
@@ -369,11 +362,7 @@ impl LMDBEventDatabase {
 
                             // this event is ok
                             collected_events.push(event);
-
-                            let _ = c
-                                .query
-                                .total_sent
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            c.query.total_sent.update(|u| u + 1);
                         }
                     }
 
@@ -396,9 +385,9 @@ impl LMDBEventDatabase {
                     }
 
                     // pull 16 entries from each of the top 4 cursors (as defined from the previous sort call)
-                    let cursors_len = &cursors.len();
-                    for c in &mut cursors[usize::max(0, cursors_len - 4)..] {
-                        c.pull();
+                    let max_len = cursors.len().max(4);
+                    for c in &mut cursors[max_len - 4..] {
+                        c.fetch();
                     }
                 }
             }
@@ -408,8 +397,12 @@ impl LMDBEventDatabase {
     }
 
     fn plan_query(&self, filter: Filter, queries: &mut Vec<Query>, max_limit: usize) {
-        let until = filter.until.map(|ts| ts.0).unwrap_or(0).to_ne_bytes();
-        let since = filter.until.map(|ts| ts.0).unwrap_or(u32::MAX);
+        let start_ts = filter
+            .until
+            .map(|ts| ts.0)
+            .unwrap_or(u32::MAX)
+            .to_ne_bytes();
+        let end_ts = filter.since.map(|ts| ts.0).unwrap_or(0);
         let mut extra_tag: Option<TagQuery> = None;
 
         if let Some(mut tags) = filter.tags {
@@ -435,7 +428,7 @@ impl LMDBEventDatabase {
                         .iter()
                         .map(|v| {
                             let mut key = [0u8; 8 + 4];
-                            key[8..].copy_from_slice(&until);
+                            key[8..].copy_from_slice(&start_ts);
 
                             match lowercase_hex::decode_to_slice(v, &mut key[0..8]) {
                                 Ok(_) => Vec::from(&key[..]),
@@ -449,9 +442,9 @@ impl LMDBEventDatabase {
                             }
                         })
                         .collect(),
-                    since,
+                    end_ts,
                     limit: max_limit,
-                    total_sent: AtomicUsize::new(0),
+                    total_sent: Cell::new(0),
                     extra_tag: tags.get(1).cloned(), // get the second tag if it exists as secondary filter
                     extra_kinds: filter
                         .kinds
@@ -478,7 +471,7 @@ impl LMDBEventDatabase {
             let mut sub_queries = Vec::with_capacity(p_values.len() * k_values.len());
             for (k_value, p_value) in iproduct!(k_values, p_values) {
                 let mut key = Vec::from([0u8; 8 + 2 + 4]);
-                key[8 + 4..].copy_from_slice(&until);
+                key[8 + 4..].copy_from_slice(&start_ts);
 
                 if let Ok(k) = k_value.parse::<u16>() {
                     key[8..8 + 2].copy_from_slice(&k.to_ne_bytes());
@@ -504,9 +497,9 @@ impl LMDBEventDatabase {
                 queries.push(Query {
                     db: self.index_ptag_ktag,
                     sub_queries,
-                    since,
+                    end_ts,
                     limit: max_limit,
-                    total_sent: AtomicUsize::new(0),
+                    total_sent: Cell::new(0),
                     extra_tag: best_possible_tag.cloned(),
                     extra_kinds: filter
                         .kinds
@@ -526,13 +519,14 @@ impl LMDBEventDatabase {
         }
 
         if let (Some(authors), Some(kinds)) = (&filter.authors, &filter.kinds) {
+            // kinds and authors
             // use pubkey-kind as the main index
             let mut sub_queries = Vec::with_capacity(authors.len() * kinds.len());
 
             for author in authors {
                 for kind in kinds {
                     let mut key = Vec::from([0u8; 8 + 4 + 4]);
-                    key[8 + 4..].copy_from_slice(&until);
+                    key[8 + 4..].copy_from_slice(&start_ts);
 
                     key[0..8].copy_from_slice(&author.as_u64_lossy().to_ne_bytes());
                     key[8..8 + 4].copy_from_slice(&kind.0.to_ne_bytes());
@@ -543,47 +537,61 @@ impl LMDBEventDatabase {
             queries.push(Query {
                 db: self.index_pubkey_kind,
                 sub_queries,
-                since,
+                end_ts,
                 limit: max_limit,
-                total_sent: AtomicUsize::new(0),
+                total_sent: Cell::new(0),
                 extra_tag,
                 extra_kinds: None,
                 extra_authors: None,
             });
         } else if let Some(authors) = filter.authors {
+            // just authors
             queries.push(Query {
                 db: self.index_pubkey,
                 sub_queries: authors
                     .iter()
                     .map(|a| {
                         let mut key = Vec::from([0u8; 8 + 4]);
-                        key[8..].copy_from_slice(&until);
+                        key[8..].copy_from_slice(&start_ts);
                         key[0..8].copy_from_slice(&a.as_u64_lossy().to_ne_bytes());
                         key
                     })
                     .collect(),
-                since,
+                end_ts,
                 limit: max_limit,
-                total_sent: AtomicUsize::new(0),
+                total_sent: Cell::new(0),
                 extra_tag,
                 extra_kinds: None,
                 extra_authors: None,
             });
         } else if let Some(kinds) = filter.kinds {
+            // just kinds
             queries.push(Query {
                 db: self.index_kind,
                 sub_queries: kinds
                     .iter()
                     .map(|k| {
-                        let mut key = Vec::from([0u8; 4 + 4]);
-                        key[4..].copy_from_slice(&until);
-                        key[0..4].copy_from_slice(&k.0.to_ne_bytes());
+                        let mut key = Vec::from([0u8; 2 + 4]);
+                        key[2..].copy_from_slice(&start_ts);
+                        key[0..2].copy_from_slice(&k.0.to_ne_bytes());
                         key
                     })
                     .collect(),
-                since,
+                end_ts,
                 limit: max_limit,
-                total_sent: AtomicUsize::new(0),
+                total_sent: Cell::new(0),
+                extra_tag,
+                extra_kinds: None,
+                extra_authors: None,
+            });
+        } else {
+            // no filters, use just the created_at index
+            queries.push(Query {
+                db: self.index_timestamp,
+                sub_queries: vec![start_ts.into()],
+                end_ts,
+                limit: max_limit,
+                total_sent: Cell::new(0),
                 extra_tag,
                 extra_kinds: None,
                 extra_authors: None,
@@ -601,7 +609,7 @@ impl LMDBEventDatabase {
         // by date only
         {
             cb(IndexKey {
-                db: self.index_created_at,
+                db: self.index_timestamp,
                 key: ts_bytes,
             })?;
         }
@@ -724,12 +732,12 @@ impl EventDatabase for LMDBEventDatabase {
     fn save_event(&self, event: &Event) -> Result<()> {
         unsafe {
             let mut txn: *mut lmdb::MDB_txn = core::ptr::null_mut();
-            check_lmdb_error!(lmdb::mdb_txn_begin(
+            check_lmdb_error(lmdb::mdb_txn_begin(
                 self.env,
                 core::ptr::null_mut(),
                 0,
-                &mut txn
-            ));
+                &mut txn,
+            ))?;
 
             // check if we already have this id
             let id_bytes = event.id.as_u64_lossy().to_ne_bytes();
@@ -754,7 +762,7 @@ impl EventDatabase for LMDBEventDatabase {
             }
 
             self.save_internal(txn, event)?;
-            check_lmdb_error!(lmdb::mdb_txn_commit(txn));
+            check_lmdb_error(lmdb::mdb_txn_commit(txn))?;
         }
 
         Ok(())
@@ -763,12 +771,12 @@ impl EventDatabase for LMDBEventDatabase {
     fn replace_event(&self, event: &Event, with_address: bool) -> Result<()> {
         unsafe {
             let mut wtxn: *mut lmdb::MDB_txn = core::ptr::null_mut();
-            check_lmdb_error!(lmdb::mdb_txn_begin(
+            check_lmdb_error(lmdb::mdb_txn_begin(
                 self.env,
                 core::ptr::null_mut(),
                 0,
-                &mut wtxn
-            ));
+                &mut wtxn,
+            ))?;
 
             // create filter to find existing events
             let mut filter = Filter::new();
@@ -783,17 +791,9 @@ impl EventDatabase for LMDBEventDatabase {
             let mut should_store = true;
 
             // find and delete older events
-            let mut rtxn: *mut lmdb::MDB_txn = core::ptr::null_mut();
-            check_lmdb_error!(lmdb::mdb_txn_begin(
-                self.env,
-                core::ptr::null_mut(),
-                lmdb::MDB_RDONLY,
-                &mut rtxn
-            ));
-
             let mut queries: Vec<Query> = Vec::with_capacity(1);
             self.plan_query(filter, &mut queries, 1);
-            self.execute(rtxn, queries, |existing_event| {
+            self.execute(wtxn, queries, |existing_event| {
                 if existing_event.created_at.0 < event.created_at.0 {
                     self.delete_internal(
                         wtxn,
@@ -806,13 +806,11 @@ impl EventDatabase for LMDBEventDatabase {
                 Ok(())
             })?;
 
-            lmdb::mdb_txn_abort(rtxn);
-
             if should_store {
                 self.save_internal(wtxn, event)?;
             }
 
-            check_lmdb_error!(lmdb::mdb_txn_commit(wtxn));
+            check_lmdb_error(lmdb::mdb_txn_commit(wtxn))?;
         }
         Ok(())
     }
@@ -825,12 +823,12 @@ impl EventDatabase for LMDBEventDatabase {
             let mut queries: Vec<Query> = Vec::with_capacity(64);
 
             let mut txn: *mut lmdb::MDB_txn = core::ptr::null_mut();
-            check_lmdb_error!(lmdb::mdb_txn_begin(
+            check_lmdb_error(lmdb::mdb_txn_begin(
                 self.env,
                 core::ptr::null_mut(),
                 lmdb::MDB_RDONLY,
-                &mut txn
-            ));
+                &mut txn,
+            ))?;
 
             for filter in filters {
                 if filter.search.is_some() {
@@ -894,14 +892,14 @@ impl EventDatabase for LMDBEventDatabase {
     fn delete_event(&self, id: &ID) -> Result<()> {
         unsafe {
             let mut txn: *mut lmdb::MDB_txn = core::ptr::null_mut();
-            check_lmdb_error!(lmdb::mdb_txn_begin(
+            check_lmdb_error(lmdb::mdb_txn_begin(
                 self.env,
                 core::ptr::null_mut(),
                 0,
-                &mut txn
-            ));
+                &mut txn,
+            ))?;
             self.delete_internal(txn, id.as_u64_lossy())?;
-            check_lmdb_error!(lmdb::mdb_txn_commit(txn));
+            check_lmdb_error(lmdb::mdb_txn_commit(txn))?;
         }
         Ok(())
     }
@@ -912,12 +910,12 @@ fn open_db(txn: *mut lmdb::MDB_txn, name: &str, flags: u32) -> Result<lmdb::MDB_
     unsafe {
         let mut dbi: lmdb::MDB_dbi = 0;
         let c_name = std::ffi::CString::new(name).unwrap();
-        check_lmdb_error!(lmdb::mdb_dbi_open(
+        check_lmdb_error(lmdb::mdb_dbi_open(
             txn,
             c_name.as_ptr(),
             lmdb::MDB_CREATE | flags,
-            &mut dbi
-        ));
+            &mut dbi,
+        ))?;
         Ok(dbi)
     }
 }
@@ -937,11 +935,11 @@ struct Query {
     sub_queries: Vec<Vec<u8>>,
 
     // we'll scan each index up to this point (the last 4 bytes)
-    since: u32,
+    end_ts: u32,
 
     // max number of results we'll return from this
     limit: usize,
-    total_sent: AtomicUsize, // total sent for this query, shared among all sub_queries
+    total_sent: Cell<usize>, // total sent for this query, shared among all sub_queries
 
     // these extra values will be matched against after we've read an event from the database
     extra_tag: Option<TagQuery>,
@@ -951,12 +949,15 @@ struct Query {
 
 #[derive(Debug)]
 struct Cursor {
+    // this index in the sub_queries list
+    i: usize,
+
     cursor: *mut lmdb::MDB_cursor,
     query: Rc<Query>,
     last_read_timestamp: u32,
 
     // timestamps and ids we've pulled that were not yet collected
-    pulled: Vec<(u32, u64)>,
+    pulled: VecDeque<(u32, u64)>,
 
     // last key-val we fetched (also the one with the lowest timestamp)
     last_key: lmdb::MDB_val,
@@ -967,7 +968,7 @@ struct Cursor {
 }
 
 impl Cursor {
-    fn pull(&mut self) {
+    fn fetch(&mut self) {
         unsafe {
             for _ in 0..16 {
                 // check if we've run out of things to read in this cursor
@@ -975,37 +976,156 @@ impl Cursor {
                     self.last_key.mv_data as *const u8,
                     self.last_key.mv_size,
                 );
-                if self.last_key.mv_size == 0
-                    || u32::from_ne_bytes(key[key.len() - 4..].try_into().unwrap())
-                        < self.query.since
-                {
+
+                let starting_key = &self.query.sub_queries[self.i];
+                let prefix = &starting_key[0..starting_key.len() - 4];
+                if !key.starts_with(prefix) {
                     // this cursor has ended
                     self.done = true;
                     break;
                 }
 
-                // if it didn't end this was a valid pulled value
-                self.pulled.push((
-                    u32::from_ne_bytes(key[key.len() - 4..].try_into().unwrap()),
-                    u64::from_ne_bytes(
-                        std::slice::from_raw_parts(
-                            self.last_val.mv_data as *const u8,
-                            self.last_val.mv_size,
-                        )[8 * 2..8 * 2 + 8]
-                            .try_into()
-                            .unwrap(),
-                    ),
-                ));
+                let timestamp = u32::from_ne_bytes(key[key.len() - 4..].try_into().unwrap());
+                if self.last_key.mv_size == 0 || timestamp < self.query.end_ts {
+                    // this cursor has ended
+                    self.done = true;
+                    break;
+                }
+
+                // if it didn't end this was a valid pulled value, add it
+                let id_ref = u64::from_ne_bytes(
+                    std::slice::from_raw_parts(
+                        self.last_val.mv_data as *const u8,
+                        self.last_val.mv_size,
+                    )
+                    .try_into()
+                    .expect("value should be 8 bytes"),
+                );
+
+                self.pulled.push_back((timestamp, id_ref));
+
+                // update this
+                self.last_read_timestamp = timestamp;
 
                 // advance the cursor
-                let _ = lmdb::mdb_cursor_get(
+                let o = lmdb::mdb_cursor_get(
                     self.cursor,
-                    self.last_key.mv_data as *mut lmdb::MDB_val,
-                    self.last_val.mv_data as *mut lmdb::MDB_val,
+                    &mut self.last_key as *mut lmdb::MDB_val,
+                    &mut self.last_val as *mut lmdb::MDB_val,
                     lmdb::MDB_PREV,
                 );
+                if o == lmdb::MDB_NOTFOUND {
+                    self.done = true;
+                    break;
+                }
             }
         }
+    }
+}
+
+fn check_lmdb_error(lmdb_code: std::os::raw::c_int) -> Result<()> {
+    unsafe {
+        if lmdb_code == 0 {
+            Ok(())
+        } else {
+            let err_cstr = lmdb::mdb_strerror(lmdb_code);
+            let err_str = if err_cstr.is_null() {
+                format!("Unknown LMDB error: {}", lmdb_code)
+            } else {
+                std::ffi::CStr::from_ptr(err_cstr)
+                    .to_string_lossy()
+                    .to_string()
+            };
+            return Err(DatabaseError::LMDB(err_str));
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn mdb_cmp_memn(
+    a: *const lmdb::MDB_val,
+    b: *const lmdb::MDB_val,
+) -> std::os::raw::c_int {
+    if a.is_null() || b.is_null() {
+        return 0;
+    }
+
+    let a_val = unsafe { &*a };
+    let b_val = unsafe { &*b };
+
+    if a_val.mv_data.is_null() || b_val.mv_data.is_null() {
+        return 0;
+    }
+
+    let len = a_val.mv_size;
+    let len_diff = (a_val.mv_size as isize) - (b_val.mv_size as isize);
+
+    let (cmp_len, final_len_diff) = if len_diff > 0 {
+        (b_val.mv_size, 1i32)
+    } else {
+        (len, if len_diff < 0 { -1i32 } else { 0i32 })
+    };
+
+    let diff = unsafe {
+        let a_slice = std::slice::from_raw_parts(a_val.mv_data as *const u8, cmp_len);
+        let b_slice = std::slice::from_raw_parts(b_val.mv_data as *const u8, cmp_len);
+
+        // Compare bytes lexicographically
+        match a_slice.cmp(b_slice) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Greater => 1,
+            std::cmp::Ordering::Equal => 0,
+        }
+    };
+
+    if diff != 0 {
+        diff
+    } else {
+        final_len_diff
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn strfry_uint32_comparator(
+    a: *const lmdb::MDB_val,
+    b: *const lmdb::MDB_val,
+) -> std::os::raw::c_int {
+    let a_val = unsafe { &*a };
+    let b_val = unsafe { &*b };
+
+    // create modified MDB_val structs for string comparison (without the last 4 bytes)
+    let a2 = lmdb::MDB_val {
+        mv_size: a_val.mv_size - 4,
+        mv_data: a_val.mv_data,
+    };
+    let b2 = lmdb::MDB_val {
+        mv_size: b_val.mv_size - 4,
+        mv_data: b_val.mv_data,
+    };
+
+    // compare the string portions
+    let string_compare = mdb_cmp_memn(&a2 as *const lmdb::MDB_val, &b2 as *const lmdb::MDB_val);
+    if string_compare != 0 {
+        return string_compare;
+    }
+
+    // extract and compare the native-encoded uint32 values from the last 4 bytes
+    let ai = unsafe {
+        let src = (a_val.mv_data as *const u8).add(a_val.mv_size - 4);
+        core::ptr::read_unaligned(src as *const u32)
+    };
+
+    let bi = unsafe {
+        let src = (b_val.mv_data as *const u8).add(b_val.mv_size - 4);
+        core::ptr::read_unaligned(src as *const u32)
+    };
+
+    if ai < bi {
+        -1
+    } else if ai > bi {
+        1
+    } else {
+        0
     }
 }
 
@@ -1013,6 +1133,90 @@ impl Cursor {
 mod tests {
     use super::*;
     use crate::{event_template::EventTemplate, Filter, Kind, SecretKey, Timestamp};
+
+    #[test]
+    fn test_custom_comparator() {
+        let temp_dir = std::env::temp_dir().join("lmdb_test_custom_comparator");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let store = LMDBEventDatabase::init(&temp_dir).expect("failed to initialize store");
+
+        // [n, 0, 0, 0]
+        for i in 0..256 {
+            let event = EventTemplate {
+                content: "nothing".to_string(),
+                created_at: Timestamp(i),
+                ..Default::default()
+            }
+            .finalize(&SecretKey::generate());
+            store.save_event(&event).expect("failed to save event");
+        }
+        // [n, 0, 0, 1]
+        for i in 16777216..16777472 {
+            let event = EventTemplate {
+                content: "nothing".to_string(),
+                created_at: Timestamp(i),
+                ..Default::default()
+            }
+            .finalize(&SecretKey::generate());
+            store.save_event(&event).expect("failed to save event");
+        }
+
+        {
+            let filter = Filter {
+                since: Some(50u32.into()),
+                until: Some(100u32.into()),
+                ..Default::default()
+            };
+            let mut results: Vec<u32> = Vec::with_capacity(50);
+            store
+                .query_events(vec![filter], 100, |event| {
+                    results.push(event.created_at.0.into());
+                    Ok(())
+                })
+                .expect("failed to query events");
+
+            assert_eq!(results.len(), 51);
+        }
+
+        {
+            let filter = Filter {
+                since: Some(16777266u32.into()),
+                until: Some(16777316u32.into()),
+                ..Default::default()
+            };
+            let mut results: Vec<u32> = Vec::with_capacity(50);
+            store
+                .query_events(vec![filter], 100, |event| {
+                    results.push(event.created_at.0.into());
+                    Ok(())
+                })
+                .expect("failed to query events");
+
+            assert_eq!(results.len(), 51);
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_query_empty() {
+        let temp_dir = std::env::temp_dir().join("lmdb_test_query_empty");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let store = LMDBEventDatabase::init(&temp_dir).expect("failed to initialize store");
+
+        // query all events (there are none)
+        let filter = Filter::new();
+        let mut results = 0;
+        store
+            .query_events(vec![filter], 100, |_| {
+                results += 1;
+                Ok(())
+            })
+            .expect("failed to query events");
+
+        assert_eq!(results, 0);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 
     #[test]
     fn test_save_and_query_event() {
@@ -1120,18 +1324,17 @@ mod tests {
         let store = LMDBEventDatabase::init(&temp_dir).expect("failed to initialize store");
 
         // save events with different kinds
-        for i in 0..3 {
+        for i in 0..3000 {
             let event = EventTemplate {
                 content: format!("{}", i),
                 created_at: Timestamp(i),
-                kind: Kind(i as u16),
+                kind: Kind(i as u16 % 50),
                 ..Default::default()
             }
             .finalize(&SecretKey::generate());
             store.save_event(&event).expect("failed to save event");
         }
 
-        // filter by kind 1
         let mut filter = Filter::new();
         filter.kinds = Some(vec![Kind(1)]);
         let mut results = Vec::new();
@@ -1141,8 +1344,8 @@ mod tests {
                 Ok(())
             })
             .expect("failed to query events");
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], 1);
+        assert_eq!(results.len(), 60);
+        assert!(results.iter().all(|kind| *kind == 1),);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
