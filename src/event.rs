@@ -69,6 +69,18 @@ impl PartialEq for Event {
     }
 }
 
+impl PartialEq<ArchivedEvent> for ArchivedEvent {
+    fn eq(&self, other: &ArchivedEvent) -> bool {
+        self.id == other.id
+    }
+}
+
+impl PartialEq<ArchivedEvent> for Event {
+    fn eq(&self, other: &ArchivedEvent) -> bool {
+        self.id == other.id
+    }
+}
+
 impl Eq for Event {}
 
 impl std::hash::Hash for Event {

@@ -83,6 +83,18 @@ impl fmt::Display for ID {
     }
 }
 
+impl PartialEq<ArchivedID> for ArchivedID {
+    fn eq(&self, other: &ArchivedID) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl PartialEq<ArchivedID> for ID {
+    fn eq(&self, other: &ArchivedID) -> bool {
+        self.0 == other.0
+    }
+}
+
 /// A 64-byte signature
 #[derive(Clone, Copy, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Deserialize, rkyv::Serialize)]
 pub struct Signature(pub [u8; 64]);

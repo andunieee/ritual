@@ -1,4 +1,3 @@
-use phf::phf_map;
 use rkyv::rancor;
 
 use crate::{event::ArchivedEvent, Event, Filter, ID};
@@ -40,14 +39,3 @@ pub trait EventDatabase {
 
     fn replace_event(&self, event: &Event, with_address: bool) -> Result<()>;
 }
-
-pub static TAGS_VALUE: phf::Map<&'static str, u8> = phf_map! {
-    "d" => 9,
-    "e" => 8,
-    "E" => 8,
-    "h" => 7,
-    "P" => 3,
-    "p" => 2,
-    "k" => 2,
-    "K" => 1,
-};

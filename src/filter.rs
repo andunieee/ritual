@@ -3,6 +3,7 @@ use serde::{
     de::{MapAccess, Visitor},
     Deserialize, Deserializer, Serialize, Serializer,
 };
+use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Filter {
@@ -16,7 +17,60 @@ pub struct Filter {
     pub search: Option<String>,
 }
 
-pub type TagQuery = (String, Vec<String>);
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct TagQuery(pub String, pub Vec<String>);
+
+impl TagQuery {
+    pub(crate) fn to_sub_queries(&self, start_ts: &[u8]) -> Vec<Vec<u8>> {
+        self.1
+            .iter()
+            .map(|v| {
+                let mut key = [0u8; 1 + 8 + 4];
+                key[1 + 8..].copy_from_slice(&start_ts);
+
+                if self.0.len() > 0 {
+                    key[0] = self.0.as_bytes()[0];
+                }
+
+                match lowercase_hex::decode_to_slice(v, &mut key[1..1 + 8]) {
+                    Ok(_) => Vec::from(&key[..]),
+                    Err(_) => {
+                        let mut s: lmdb_store_hasher::AHasher = Default::default();
+                        v.hash(&mut s);
+                        let hash = s.finish();
+                        key[0..8].copy_from_slice(&hash.to_ne_bytes());
+                        Vec::from(&key[..])
+                    }
+                }
+            })
+            .collect()
+    }
+
+    pub fn key(&self) -> &str {
+        self.0.as_str()
+    }
+
+    pub fn values(&self) -> &Vec<String> {
+        &self.1
+    }
+
+    pub fn worth(&self) -> u8 {
+        match self.0.as_str() {
+            "d" => 9,
+            "e" => 8,
+            "E" => 8,
+            "i" => 7,
+            "I" => 7,
+            "h" => 7,
+            "g" => 5,
+            "P" => 3,
+            "p" => 2,
+            "k" => 2,
+            "K" => 1,
+            _ => 5,
+        }
+    }
+}
 
 impl Serialize for Filter {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -62,10 +116,9 @@ impl Serialize for Filter {
             map.serialize_entry("search", s)?;
         }
         if let Some(ref tags) = self.tags {
-            for (tag, values) in tags {
-                let key = format!("#{}", tag);
-                let vec_values: Vec<&String> = values.iter().collect();
-                map.serialize_entry(&key, &vec_values)?;
+            for tagq in tags {
+                let key = format!("#{}", tagq.key());
+                map.serialize_entry(&key, tagq.values())?;
             }
         }
         map.end()
@@ -109,7 +162,7 @@ impl<'de> Deserialize<'de> for Filter {
                             let tag = k.trim_start_matches('#').to_string();
                             let vals: Vec<String> = map.next_value()?;
                             let tags_list = tags.get_or_insert_with(|| Vec::with_capacity(2));
-                            tags_list.push((tag, vals));
+                            tags_list.push(TagQuery(tag, vals));
                         }
                         _ => {
                             let _: serde::de::IgnoredAny = map.next_value()?;
@@ -138,9 +191,8 @@ impl Filter {
         Self::default()
     }
 
-    /// check if an event matches this filter
     pub fn matches(&self, event: &Event) -> bool {
-        if !self.matches_ignoring_timestamp_constraints(event) {
+        if !self.matches_except_time(event) {
             return false;
         }
 
@@ -159,8 +211,7 @@ impl Filter {
         true
     }
 
-    /// check if an event matches this filter ignoring timestamp constraints
-    pub fn matches_ignoring_timestamp_constraints(&self, event: &Event) -> bool {
+    pub fn matches_except_time(&self, event: &Event) -> bool {
         if let Some(ref ids) = self.ids {
             if !ids.contains(&event.id) {
                 return false;
@@ -180,7 +231,7 @@ impl Filter {
         }
 
         if let Some(ref tags) = self.tags {
-            for (tag_name, tag_values) in tags {
+            for TagQuery(tag_name, tag_values) in tags {
                 if !event.tags.contains_any(tag_name, tag_values) {
                     return false;
                 }
@@ -235,16 +286,4 @@ impl std::fmt::Display for Filter {
             Err(_) => write!(f, "Filter"),
         }
     }
-}
-
-/// check if two filters are equal
-pub fn filter_equal(a: &Filter, b: &Filter) -> bool {
-    a.ids == b.ids
-        && a.kinds == b.kinds
-        && a.authors == b.authors
-        && a.tags == b.tags
-        && a.since == b.since
-        && a.until == b.until
-        && a.search == b.search
-        && a.limit == b.limit
 }

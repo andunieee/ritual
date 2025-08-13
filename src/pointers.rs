@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::{helpers::is_valid_relay_url, Event, Filter, Kind, PubKey, Tag, ID};
+use crate::{filter::TagQuery, helpers::is_valid_relay_url, Event, Filter, Kind, PubKey, Tag, ID};
 
 /// Unified pointer enum for all Nostr pointer types
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,7 +177,7 @@ impl Pointer {
             Pointer::Address(p) => Filter {
                 kinds: Some(vec![p.kind]),
                 authors: Some(vec![p.pubkey]),
-                tags: Some(vec![("d".to_string(), vec![p.identifier.clone()])]),
+                tags: Some(vec![TagQuery("d".to_string(), vec![p.identifier.clone()])]),
                 ..Default::default()
             },
         }

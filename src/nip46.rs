@@ -2,6 +2,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::filter::TagQuery;
 use crate::SecretKey;
 use crate::{keys, nip44, pool::Pool, Event, EventTemplate, Filter, Kind, PubKey, Tags, Timestamp};
 use serde::{Deserialize, Serialize};
@@ -135,7 +136,10 @@ impl BunkerClient {
         tokio::spawn(async move {
             let filter = Filter {
                 kinds: Some(vec![Kind(24133)]),
-                tags: Some(vec![("#p".to_string(), vec![client_pubkey.to_hex()])]),
+                tags: Some(vec![TagQuery(
+                    "#p".to_string(),
+                    vec![client_pubkey.to_hex()],
+                )]),
                 since: Some(Timestamp::now()),
                 ..Default::default()
             };
