@@ -38,7 +38,7 @@ impl TagQuery {
                         let mut s: lmdb_store_hasher::AHasher = Default::default();
                         v.hash(&mut s);
                         let hash = s.finish();
-                        key[0..8].copy_from_slice(&hash.to_ne_bytes());
+                        key[1..1 + 8].copy_from_slice(&hash.to_ne_bytes());
                         Vec::from(&key[..])
                     }
                 }
@@ -186,11 +186,6 @@ impl<'de> Deserialize<'de> for Filter {
 }
 
 impl Filter {
-    /// create a new empty filter
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     pub fn matches(&self, event: &Event) -> bool {
         if !self.matches_except_time(event) {
             return false;

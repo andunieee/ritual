@@ -95,6 +95,18 @@ impl PartialEq<ArchivedID> for ID {
     }
 }
 
+impl fmt::Debug for ArchivedID {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<id:{} archived>", lowercase_hex::encode(self.0))
+    }
+}
+
+impl fmt::Display for ArchivedID {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<id={} archived>", lowercase_hex::encode(self.0))
+    }
+}
+
 /// A 64-byte signature
 #[derive(Clone, Copy, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Deserialize, rkyv::Serialize)]
 pub struct Signature(pub [u8; 64]);

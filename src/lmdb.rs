@@ -105,7 +105,6 @@ impl LMDBEventDatabase {
         }
     }
 
-    /// internal save function
     fn save_internal(&self, txn: *mut lmdb::MDB_txn, event: &Event) -> Result<()> {
         unsafe {
             let event_data = rkyv::to_bytes::<rancor::Error>(event)?;
@@ -141,6 +140,7 @@ impl LMDBEventDatabase {
                         mv_size: id_bytes.len(),
                         mv_data: id_bytes.as_ptr() as *mut _,
                     };
+
                     check_lmdb_error(lmdb::mdb_put(
                         txn,
                         index_key.db,
@@ -265,7 +265,7 @@ impl LMDBEventDatabase {
 
                         cursor,
                         query: rc_query.clone(),
-                        last_read_timestamp: u32::MAX,
+                        last_read_timestamp: None,
 
                         pulled: VecDeque::with_capacity(64),
 
@@ -280,19 +280,21 @@ impl LMDBEventDatabase {
 
                     cursors.push(c);
                 }
+            }
 
-                let mut collected_events: Vec<&ArchivedEvent> = Vec::with_capacity(64);
-                let mut last_sent: Option<&ArchivedID> = None;
+            let mut collected_events: Vec<(&ArchivedEvent, Rc<Cell<usize>>)> =
+                Vec::with_capacity(64);
+            let mut last_sent: Option<(&ArchivedID, Rc<Cell<usize>>)> = None;
 
-                while cursors.len() > 0 {
-                    collected_events.truncate(0);
+            while cursors.len() > 0 {
+                collected_events.truncate(0);
 
-                    // sort such that the cursors will be the ones we'll read from as they're the less advanced
-                    glidesort::sort_in_vec_by_key(&mut cursors, |c| c.last_read_timestamp);
+                // sort such that the cursors will be the ones we'll read from as they're the less advanced
+                glidesort::sort_in_vec_by_key(&mut cursors, |c| c.last_read_timestamp);
 
-                    // and any entry already pulled that has a timestamp higher than this can al ready be collected
-                    let cutpoint = cursors.last().unwrap().last_read_timestamp;
-
+                // and any entry already pulled that has a timestamp higher than this can al ready be collected
+                // (if there is no cutpoint that means we have no results to collect and our query will be ended)
+                if let Some(Some(cutpoint)) = cursors.last().map(|c| c.last_read_timestamp) {
                     // reading from db and collecting events
                     for c in &mut cursors {
                         for _ in 0..c.pulled.len() {
@@ -363,42 +365,44 @@ impl LMDBEventDatabase {
                             }
 
                             // this event is ok
-                            collected_events.push(event);
+                            collected_events.push((event, c.query.total_sent.clone()));
                             c.query.total_sent.update(|u| u + 1);
                         }
                     }
+                }
 
-                    // after deciding what events are going to the client we send them
-                    glidesort::sort_in_vec_by_key(&mut collected_events, |event| {
-                        event.created_at.0
-                    });
+                // after deciding what events are going to the client we send them
+                collected_events.sort_by_key(|(event, _)| event.created_at.0);
 
-                    // dispatch to caller, filtering out duplicates
-                    for event in collected_events.iter().rev() {
-                        if let Some(last) = last_sent {
-                            if last == &event.id {
-                                continue;
+                // dispatch to caller, filtering out duplicates
+                for (event, query_total_sent) in collected_events.iter().rev() {
+                    if let Some((last_id, last_query_ref)) =
+                        last_sent.replace((&event.id, query_total_sent.clone()))
+                    {
+                        if last_id == &event.id {
+                            if last_query_ref == *query_total_sent {
+                                query_total_sent.update(|u| u - 1);
                             }
-                        }
-                        cb(event)?;
-                        let _ = last_sent.insert(&event.id);
-                    }
-
-                    // cleanup cursors that have ended
-                    let mut i = 0;
-                    for _ in 0..cursors.len() {
-                        if cursors[i].done {
-                            cursors.swap_remove(i);
                             continue;
                         }
-                        i += 1;
                     }
+                    cb(event)?;
+                }
 
-                    // pull 16 entries from each of the top 4 cursors (as defined from the previous sort call)
-                    let max_len = cursors.len().max(4);
-                    for c in &mut cursors[max_len - 4..] {
-                        c.fetch();
+                // cleanup cursors that have ended
+                let mut i = 0;
+                for _ in 0..cursors.len() {
+                    if cursors[i].done {
+                        cursors.swap_remove(i);
+                        continue;
                     }
+                    i += 1;
+                }
+
+                // pull 16 entries from each of the top 4 cursors (as defined from the previous sort call)
+                let max_len = cursors.len().max(4);
+                for c in &mut cursors[max_len - 4..] {
+                    c.fetch();
                 }
             }
 
@@ -431,7 +435,7 @@ impl LMDBEventDatabase {
                     sub_queries: tagq.to_sub_queries(&start_ts),
                     end_ts,
                     limit: max_limit,
-                    total_sent: Cell::new(0),
+                    total_sent: Rc::new(Cell::new(0)),
                     extra_tag: tags.get(1).cloned(), // get the second tag if it exists as secondary filter
                     extra_kinds: filter
                         .kinds
@@ -486,7 +490,7 @@ impl LMDBEventDatabase {
                     sub_queries,
                     end_ts,
                     limit: max_limit,
-                    total_sent: Cell::new(0),
+                    total_sent: Rc::new(Cell::new(0)),
                     extra_tag: best_possible_tag.cloned(),
                     extra_kinds: filter
                         .kinds
@@ -501,7 +505,7 @@ impl LMDBEventDatabase {
             // otherwise don't use a tag-based index
             if let Some(best_tag) = tags.get(0) {
                 // only use the first tag as the extra tag filter
-                let _ = extra_tag.insert(best_tag.clone());
+                extra_tag = Some(best_tag.clone());
 
                 // also keep the second best tag so we can use it maybe eventually
                 second_best = tags.get(1).map(|tagq| tagq.clone());
@@ -529,7 +533,7 @@ impl LMDBEventDatabase {
                 sub_queries,
                 end_ts,
                 limit: max_limit,
-                total_sent: Cell::new(0),
+                total_sent: Rc::new(Cell::new(0)),
                 extra_tag,
                 extra_kinds: None,
                 extra_authors: None,
@@ -553,7 +557,7 @@ impl LMDBEventDatabase {
                     .collect(),
                 end_ts,
                 limit: max_limit,
-                total_sent: Cell::new(0),
+                total_sent: Rc::new(Cell::new(0)),
                 extra_tag,
                 extra_kinds: None,
                 extra_authors: None,
@@ -577,7 +581,7 @@ impl LMDBEventDatabase {
                     .collect(),
                 end_ts,
                 limit: max_limit,
-                total_sent: Cell::new(0),
+                total_sent: Rc::new(Cell::new(0)),
                 extra_tag,
                 extra_kinds: None,
                 extra_authors: None,
@@ -594,11 +598,13 @@ impl LMDBEventDatabase {
                 sub_queries: best_tagq.to_sub_queries(&start_ts),
                 end_ts,
                 limit: max_limit,
-                total_sent: Cell::new(0),
+                total_sent: Rc::new(Cell::new(0)),
                 extra_tag: second_best,
                 extra_kinds: None,
                 extra_authors: None,
             });
+
+            return;
         }
 
         // no filters, use just the created_at index
@@ -607,8 +613,8 @@ impl LMDBEventDatabase {
             sub_queries: vec![start_ts.into()],
             end_ts,
             limit: max_limit,
-            total_sent: Cell::new(0),
-            extra_tag,
+            total_sent: Rc::new(Cell::new(0)),
+            extra_tag: None,
             extra_kinds: None,
             extra_authors: None,
         });
@@ -664,20 +670,21 @@ impl LMDBEventDatabase {
         }
 
         // by tag value + date
-        let mut tag_key: Option<[u8; 8 + 4]> = None;
+        let mut tag_key: Option<[u8; 1 + 8 + 4]> = None;
         for tag in &event.tags.0 {
             if tag.len() < 2 || tag[0].len() != 1 {
                 continue;
             }
 
             let key = tag_key.get_or_insert_with(|| {
-                let mut key = [0u8; 8 + 4];
-                key[8..].copy_from_slice(ts_bytes);
+                let mut key = [0u8; 1 + 8 + 4];
+                key[1 + 8..].copy_from_slice(ts_bytes);
                 key
             });
+            key[0] = tag[0].as_bytes()[0];
 
             if tag[1].len() == 64 {
-                if lowercase_hex::decode_to_slice(&tag[1][8 * 2..8 * 2 + 8 * 2], &mut key[0..8])
+                if lowercase_hex::decode_to_slice(&tag[1][8 * 2..8 * 2 + 8 * 2], &mut key[1..1 + 8])
                     .is_ok()
                 {
                     cb(IndexKey {
@@ -688,17 +695,14 @@ impl LMDBEventDatabase {
                 }
             }
 
-            let mut key = [0u8; 8 + 4];
             let mut s: lmdb_store_hasher::AHasher = Default::default();
             tag[1].hash(&mut s);
             let hash = s.finish();
-
-            key[0..8].copy_from_slice(hash.to_ne_bytes().as_slice());
-            key[8..].copy_from_slice(ts_bytes);
+            key[1..1 + 8].copy_from_slice(hash.to_ne_bytes().as_slice());
 
             cb(IndexKey {
                 db: self.index_tag,
-                key: &key,
+                key: key,
             })?;
         }
 
@@ -794,7 +798,7 @@ impl EventDatabase for LMDBEventDatabase {
             ))?;
 
             // create filter to find existing events
-            let mut filter = Filter::new();
+            let mut filter = Filter::default();
             filter.kinds = Some(vec![event.kind]);
             filter.authors = Some(vec![event.pubkey]);
             filter.limit = Some(10);
@@ -954,7 +958,7 @@ struct Query {
 
     // max number of results we'll return from this
     limit: usize,
-    total_sent: Cell<usize>, // total sent for this query, shared among all sub_queries
+    total_sent: Rc<Cell<usize>>, // total sent for this query, shared among all sub_queries
 
     // these extra values will be matched against after we've read an event from the database
     extra_tag: Option<TagQuery>,
@@ -969,7 +973,7 @@ struct Cursor {
 
     cursor: *mut lmdb::MDB_cursor,
     query: Rc<Query>,
-    last_read_timestamp: u32,
+    last_read_timestamp: Option<u32>,
 
     // timestamps and ids we've pulled that were not yet collected
     pulled: VecDeque<(u32, u64)>,
@@ -1020,7 +1024,7 @@ impl Cursor {
                 self.pulled.push_back((timestamp, id_ref));
 
                 // update this
-                self.last_read_timestamp = timestamp;
+                self.last_read_timestamp = Some(timestamp);
 
                 // advance the cursor
                 let o = lmdb::mdb_cursor_get(
@@ -1147,8 +1151,8 @@ pub extern "C" fn strfry_uint32_comparator(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{event_template::EventTemplate, Filter, Kind, SecretKey, Timestamp};
-    use assertables::{assert_ge, assert_lt};
+    use crate::{event_template::EventTemplate, Filter, Kind, SecretKey, Tags, Timestamp};
+    use assertables::{assert_contains, assert_ge, assert_lt};
 
     #[test]
     fn test_custom_comparator() {
@@ -1221,7 +1225,7 @@ mod tests {
         let store = LMDBEventDatabase::init(&temp_dir).expect("failed to initialize store");
 
         // query all events (there are none)
-        let filter = Filter::new();
+        let filter = Filter::default();
         let mut results = 0;
         store
             .query_events(vec![filter], 100, |_| {
@@ -1250,7 +1254,7 @@ mod tests {
         store.save_event(&event).expect("failed to save event");
 
         // query all events
-        let filter = Filter::new();
+        let filter = Filter::default();
         let mut results = Vec::new();
         store
             .query_events(vec![filter], 100, |event| {
@@ -1304,7 +1308,7 @@ mod tests {
         store.save_event(&event).expect("failed to save event");
 
         // verify it exists
-        let filter = Filter::new();
+        let filter = Filter::default();
         let mut count = 0;
         store
             .query_events(vec![filter.clone()], 100, |_| {
@@ -1333,40 +1337,6 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_by_kind() {
-        let temp_dir = std::env::temp_dir().join("lmdb_test_filter_kind");
-        let _ = std::fs::remove_dir_all(&temp_dir);
-
-        let store = LMDBEventDatabase::init(&temp_dir).expect("failed to initialize store");
-
-        // save events with different kinds
-        for i in 0..3000 {
-            let event = EventTemplate {
-                content: format!("{}", i),
-                created_at: Timestamp(i),
-                kind: Kind(i as u16 % 50),
-                ..Default::default()
-            }
-            .finalize(&SecretKey::generate());
-            store.save_event(&event).expect("failed to save event");
-        }
-
-        let mut filter = Filter::new();
-        filter.kinds = Some(vec![Kind(1)]);
-        let mut results = Vec::new();
-        store
-            .query_events(vec![filter], 100, |event| {
-                results.push(event.kind.0);
-                Ok(())
-            })
-            .expect("failed to query events");
-        assert_eq!(results.len(), 60);
-        assert!(results.iter().all(|kind| *kind == 1),);
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
     fn test_replaceable_events() {
         let temp_dir = std::env::temp_dir().join("lmdb_test_replaceable");
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -1388,7 +1358,7 @@ mod tests {
         // check it's there
         let mut results = Vec::new();
         store
-            .query_events(vec![Filter::new()], 100, |event| {
+            .query_events(vec![Filter::default()], 100, |event| {
                 results.push(rkyv::deserialize::<Event, rancor::Error>(event).unwrap());
                 Ok(())
             })
@@ -1411,7 +1381,7 @@ mod tests {
         // check that event1 is gone and event2 is there
         results.clear();
         store
-            .query_events(vec![Filter::new()], 100, |event| {
+            .query_events(vec![Filter::default()], 100, |event| {
                 results.push(rkyv::deserialize::<Event, rancor::Error>(event).unwrap());
                 Ok(())
             })
@@ -1434,13 +1404,291 @@ mod tests {
         // check that event2 is still there
         results.clear();
         store
-            .query_events(vec![Filter::new()], 100, |event| {
+            .query_events(vec![Filter::default()], 100, |event| {
                 results.push(rkyv::deserialize::<Event, rancor::Error>(event).unwrap());
                 Ok(())
             })
             .expect("failed to query events");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, event2.id);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_filter_by_kind() {
+        let temp_dir = std::env::temp_dir().join("lmdb_test_filter_kind");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        let store = LMDBEventDatabase::init(&temp_dir).expect("failed to initialize store");
+
+        // save events with different kinds
+        for i in 0..3000 {
+            let event = EventTemplate {
+                content: format!("{}", i),
+                created_at: Timestamp(i),
+                kind: Kind(i as u16 % 50),
+                ..Default::default()
+            }
+            .finalize(&SecretKey::generate());
+            store.save_event(&event).expect("failed to save event");
+        }
+
+        let mut filter = Filter::default();
+        filter.kinds = Some(vec![Kind(1)]);
+        let mut results = Vec::new();
+        store
+            .query_events(vec![filter], 100, |event| {
+                results.push(event.kind.0);
+                Ok(())
+            })
+            .expect("failed to query events");
+        assert_eq!(results.len(), 60);
+        assert!(results.iter().all(|kind| *kind == 1),);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_filter_by_tag() {
+        let temp_dir = std::env::temp_dir().join("lmdb_test_filter_tag");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        let store = LMDBEventDatabase::init(&temp_dir).expect("failed to initialize store");
+
+        // save events with different kinds
+        for i in 0..300 {
+            let mut templ = EventTemplate {
+                content: format!("{}", i),
+                created_at: Timestamp(i),
+                kind: Kind(1),
+                tags: Tags(vec![]),
+                ..Default::default()
+            };
+            if i % 2 == 0 {
+                templ.tags.0.push(vec!["t".to_string(), "foo".to_string()]);
+            }
+            if i % 3 == 0 {
+                templ.tags.0.push(vec!["h".to_string(), "bar".to_string()]);
+            }
+
+            let event = templ.finalize(&SecretKey::generate());
+            store.save_event(&event).expect("failed to save event");
+        }
+
+        // one
+        {
+            let mut results = 0;
+            store
+                .query_events(
+                    vec![Filter {
+                        tags: Some(vec![TagQuery("h".to_string(), vec!["bar".to_string()])]),
+                        ..Default::default()
+                    }],
+                    500,
+                    |event| {
+                        assert_contains!(
+                            event
+                                .tags
+                                .0
+                                .iter()
+                                .map(|tag| tag[1].to_string())
+                                .collect::<Vec<String>>(),
+                            &"bar".to_string()
+                        );
+                        results += 1;
+                        Ok(())
+                    },
+                )
+                .expect("failed to query events");
+            assert_eq!(results, 100);
+        }
+
+        // the other
+        {
+            let mut results = 0;
+            store
+                .query_events(
+                    vec![Filter {
+                        tags: Some(vec![TagQuery("t".to_string(), vec!["foo".to_string()])]),
+                        ..Default::default()
+                    }],
+                    500,
+                    |event| {
+                        assert_contains!(
+                            event
+                                .tags
+                                .0
+                                .iter()
+                                .map(|tag| tag[1].to_string())
+                                .collect::<Vec<String>>(),
+                            &"foo".to_string()
+                        );
+                        results += 1;
+                        Ok(())
+                    },
+                )
+                .expect("failed to query events");
+            assert_eq!(results, 150);
+        }
+
+        // the intersection
+        {
+            let mut results = 0;
+            store
+                .query_events(
+                    vec![Filter {
+                        tags: Some(vec![
+                            TagQuery("t".to_string(), vec!["foo".to_string()]),
+                            TagQuery("h".to_string(), vec!["bar".to_string()]),
+                        ]),
+                        ..Default::default()
+                    }],
+                    500,
+                    |event| {
+                        assert_contains!(
+                            event
+                                .tags
+                                .0
+                                .iter()
+                                .map(|tag| tag[1].to_string())
+                                .collect::<Vec<String>>(),
+                            &"foo".to_string()
+                        );
+                        assert_contains!(
+                            event
+                                .tags
+                                .0
+                                .iter()
+                                .map(|tag| tag[1].to_string())
+                                .collect::<Vec<String>>(),
+                            &"bar".to_string()
+                        );
+                        results += 1;
+                        Ok(())
+                    },
+                )
+                .expect("failed to query events");
+            assert_eq!(results, 50);
+        }
+
+        // the union
+        {
+            let mut results = 0;
+            store
+                .query_events(
+                    vec![
+                        Filter {
+                            tags: Some(vec![TagQuery("t".to_string(), vec!["foo".to_string()])]),
+                            ..Default::default()
+                        },
+                        Filter {
+                            tags: Some(vec![TagQuery("h".to_string(), vec!["bar".to_string()])]),
+                            ..Default::default()
+                        },
+                    ],
+                    500,
+                    |event| {
+                        assert!(
+                            event
+                                .tags
+                                .0
+                                .iter()
+                                .map(|tag| tag[1].to_string())
+                                .collect::<Vec<String>>()
+                                .contains(&"foo".to_string())
+                                || event
+                                    .tags
+                                    .0
+                                    .iter()
+                                    .map(|tag| tag[1].to_string())
+                                    .collect::<Vec<String>>()
+                                    .contains(&"bar".to_string())
+                        );
+                        results += 1;
+                        Ok(())
+                    },
+                )
+                .expect("failed to query events");
+            assert_eq!(results, 187);
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_slightly_complex_query() {
+        let temp_dir = std::env::temp_dir().join("lmdb_test_slightly_complex_query");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let store = LMDBEventDatabase::init(&temp_dir).expect("failed to initialize store");
+
+        // save 100 events
+        for i in 0..100 {
+            let mut tags = Vec::new();
+            if i % 3 == 0 {
+                tags.push(vec!["t".to_string(), "a".to_string()]);
+            }
+            if i % 4 == 0 {
+                tags.push(vec!["t".to_string(), "b".to_string()]);
+            }
+
+            let event = EventTemplate {
+                content: format!("{}", i),
+                created_at: Timestamp(i),
+                kind: Kind(1),
+                tags: tags.into(),
+                ..Default::default()
+            }
+            .finalize(&SecretKey::generate());
+
+            store.save_event(&event).expect("failed to save event");
+        }
+
+        {
+            let filters = vec![Filter {
+                tags: Some(vec![TagQuery(
+                    "t".to_string(),
+                    vec!["a".to_string(), "b".to_string()],
+                )]),
+                limit: Some(20),
+                ..Default::default()
+            }];
+
+            let mut total = 0;
+            store
+                .query_events(filters, 1000, |_| {
+                    total += 1;
+                    Ok(())
+                })
+                .expect("failed to query events");
+
+            assert_eq!(total, 20);
+        }
+
+        {
+            let filters = vec![
+                Filter {
+                    tags: Some(vec![TagQuery("t".to_string(), vec!["a".to_string()])]),
+                    limit: Some(30),
+                    ..Default::default()
+                },
+                Filter {
+                    tags: Some(vec![TagQuery("t".to_string(), vec!["b".to_string()])]),
+                    limit: Some(40),
+                    ..Default::default()
+                },
+            ];
+
+            let mut total = 0;
+            store
+                .query_events(filters, 1000, |_| {
+                    total += 1;
+                    Ok(())
+                })
+                .expect("failed to query events");
+
+            assert_eq!(total, 45);
+        }
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
@@ -1468,8 +1716,11 @@ mod tests {
             };
 
             let mut tags = Vec::new();
-            if i % 10 == 0 {
+            if i % 9 == 0 {
                 tags.push(vec!["t".to_string(), "hello".to_string()]);
+            }
+            if i % 10 == 0 {
+                tags.push(vec!["t".to_string(), "world".to_string()]);
             }
             if i % 25 == 0 {
                 tags.push(vec!["K".to_string(), "1".to_string()]);
@@ -1499,7 +1750,10 @@ mod tests {
                 ..Default::default()
             },
             Filter {
-                tags: Some(vec![TagQuery("t".to_string(), vec!["hello".to_string()])]),
+                tags: Some(vec![TagQuery(
+                    "t".to_string(),
+                    vec!["hello".to_string(), "world".to_string()],
+                )]),
                 limit: Some(300),
                 ..Default::default()
             },
