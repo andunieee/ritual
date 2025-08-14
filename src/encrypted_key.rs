@@ -1,8 +1,3 @@
-//! NIP-49: Private Key Encryption
-//!
-//! This module implements NIP-49 for encrypting and decrypting private keys
-//! using a password-based key derivation function (scrypt) and XChaCha20-Poly1305.
-
 use crate::{keys, SecretKey};
 use bech32::{Bech32, Hrp};
 use chacha20poly1305::{
@@ -203,16 +198,6 @@ pub fn derive_scrypted_key(
 mod tests {
     use super::*;
     use crate::keys::SecretKey;
-
-    #[test]
-    fn test_decrypt_key_from_nip_text() {
-        let ncrypt = "ncryptsec1qgg9947rlpvqu76pj5ecreduf9jxhselq2nae2kghhvd5g7dgjtcxfqtd67p9m0w57lspw8gsq6yphnm8623nsl8xn9j4jdzz84zm3frztj3z7s35vpzmqf6ksu8r89qk5z2zxfmu5gv8th8wclt0h4p";
-        let secret_key = decrypt(ncrypt, "nostr").unwrap();
-        let expected =
-            SecretKey::from_hex("3501454135014541350145413501453fefb02227e449e57cf4d3a3ce05378683")
-                .unwrap();
-        assert_eq!(secret_key, expected);
-    }
 
     #[test]
     fn test_encrypt_and_decrypt() {

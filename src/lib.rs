@@ -8,25 +8,25 @@
 #![feature(test)]
 #![feature(new_range_api)]
 
+pub mod bunker_client;
+pub mod codes;
+pub mod encrypted_key;
 pub mod envelopes;
 pub mod event;
 pub mod event_template;
 pub mod filter;
 pub mod helpers;
 pub mod keys;
-pub mod nip19;
-pub mod nip44;
-pub mod nip46;
-pub mod nip49;
+pub mod message_encryption;
 pub mod pointers;
 pub mod timestamp;
 
 #[cfg(all(not(target_arch = "wasm32"), not(target_arch = "wasm64")))]
+pub mod addresses;
+#[cfg(all(not(target_arch = "wasm32"), not(target_arch = "wasm64")))]
 pub mod lmdb;
 #[cfg(all(not(target_arch = "wasm32"), not(target_arch = "wasm64")))]
-pub mod nip05;
-#[cfg(all(not(target_arch = "wasm32"), not(target_arch = "wasm64")))]
-pub mod nip11;
+pub mod relay_information;
 #[cfg(all(not(target_arch = "wasm32"), not(target_arch = "wasm64")))]
 pub mod server;
 

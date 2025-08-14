@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 use thiserror::Error;
 
-use crate::{event_template::EventTemplate, nip46::BunkerClient, Event, SecretKey};
+use crate::{bunker_client::BunkerClient, event_template::EventTemplate, Event, SecretKey};
 
 #[derive(Debug, Error)]
 pub enum Error {

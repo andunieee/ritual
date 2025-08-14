@@ -1,8 +1,3 @@
-//! NIP-05: Mapping Nostr keys to DNS-based internet identifiers
-//!
-//! This module implements NIP-05 for verifying and querying Nostr identities
-//! using DNS-based identifiers.
-
 use crate::{keys, ProfilePointer, PubKey};
 use regex::Regex;
 use reqwest::Client;
@@ -11,7 +6,7 @@ use std::collections::HashMap;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum Nip05Error {
+pub enum AddressError {
     #[error("invalid identifier")]
     InvalidIdentifier,
 
@@ -31,7 +26,7 @@ pub enum Nip05Error {
     PubKeyParsing(#[from] keys::PubKeyError),
 }
 
-pub type Result<T> = std::result::Result<T, Nip05Error>;
+pub type Result<T> = std::result::Result<T, AddressError>;
 
 /// well-known response structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,24 +34,22 @@ pub struct WellKnownResponse {
     pub names: HashMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relays: Option<HashMap<String, Vec<String>>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub nip46: Option<HashMap<String, Vec<String>>>,
 }
 
 lazy_static::lazy_static! {
-    static ref NIP05_REGEX: Regex = Regex::new(r"^(?:([\w.+-]+)@)?([\w_-]+(\.[\w_-]+)+)$").unwrap();
+    static ref REGEX: Regex = Regex::new(r"^(?:([\w.+-]+)@)?([\w_-]+(\.[\w_-]+)+)$").unwrap();
 }
 
-/// check if an identifier is valid according to NIP-05 format
+/// check if an identifier is valid according to address format
 pub fn is_valid_identifier(input: &str) -> bool {
-    NIP05_REGEX.is_match(input)
+    REGEX.is_match(input)
 }
 
-/// parse a NIP-05 identifier into name and domain parts
+/// parse a identifier into name and domain parts
 pub fn parse_identifier(fullname: &str) -> Result<(String, String)> {
-    let captures = NIP05_REGEX
+    let captures = REGEX
         .captures(fullname)
-        .ok_or(Nip05Error::InvalidIdentifier)?;
+        .ok_or(AddressError::InvalidIdentifier)?;
 
     let name = captures
         .get(1)
@@ -65,24 +58,24 @@ pub fn parse_identifier(fullname: &str) -> Result<(String, String)> {
         .to_string();
     let domain = captures
         .get(2)
-        .ok_or(Nip05Error::MissingDomain)?
+        .ok_or(AddressError::MissingDomain)?
         .as_str()
         .to_string();
 
     Ok((name, domain))
 }
 
-/// query a NIP-05 identifier and return the profile pointer
+/// query a identifier and return the profile pointer
 pub async fn query_identifier(fullname: &str) -> Result<ProfilePointer> {
     let (result, name) = fetch(fullname).await?;
 
     let pubkey_hex = result
         .names
         .get(&name)
-        .ok_or_else(|| Nip05Error::NoEntry(name.clone()))?;
+        .ok_or_else(|| AddressError::NoEntry(name.clone()))?;
 
     let pubkey = PubKey::from_hex(pubkey_hex)
-        .map_err(|_| Nip05Error::InvalidPublicKey(pubkey_hex.clone()))?;
+        .map_err(|_| AddressError::InvalidPublicKey(pubkey_hex.clone()))?;
 
     let relays = if let Some(relays_map) = &result.relays {
         relays_map.get(pubkey_hex).cloned().unwrap_or_default()
@@ -93,7 +86,7 @@ pub async fn query_identifier(fullname: &str) -> Result<ProfilePointer> {
     Ok(ProfilePointer { pubkey, relays })
 }
 
-/// fetch the well-known response for a NIP-05 identifier
+/// fetch the well-known response for a identifier
 pub async fn fetch(fullname: &str) -> Result<(WellKnownResponse, String)> {
     let (name, domain) = parse_identifier(fullname)?;
 
@@ -106,7 +99,7 @@ pub async fn fetch(fullname: &str) -> Result<(WellKnownResponse, String)> {
     let response = client.get(&url).send().await?;
 
     if !response.status().is_success() {
-        return Err(Nip05Error::Http(reqwest::Error::from(
+        return Err(AddressError::Http(reqwest::Error::from(
             response.error_for_status().unwrap_err(),
         )));
     }
@@ -116,7 +109,7 @@ pub async fn fetch(fullname: &str) -> Result<(WellKnownResponse, String)> {
     Ok((result, name))
 }
 
-/// normalize a NIP-05 identifier
+/// normalize a identifier
 pub fn normalize_identifier(fullname: &str) -> String {
     if fullname.starts_with("_@") {
         fullname[2..].to_string()
@@ -125,7 +118,7 @@ pub fn normalize_identifier(fullname: &str) -> String {
     }
 }
 
-/// convert a NIP-05 identifier to its well-known URL
+/// convert a identifier to its well-known URL
 pub fn identifier_to_url(address: &str) -> String {
     let parts: Vec<&str> = address.split('@').collect();
     if parts.len() == 1 {

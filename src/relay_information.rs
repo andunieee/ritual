@@ -1,7 +1,3 @@
-//! NIP-11: Relay Information Document
-//!
-//! This module implements NIP-11 for fetching relay information documents.
-
 use crate::{normalize::normalize_url, PubKey};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -9,7 +5,7 @@ use std::time::Duration;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum Nip11Error {
+pub enum RelayInformationError {
     #[error("HTTP request failed: {0}")]
     Http(#[from] reqwest::Error),
 
@@ -20,7 +16,7 @@ pub enum Nip11Error {
     Normalize(#[from] url::ParseError),
 }
 
-pub type Result<T> = std::result::Result<T, Nip11Error>;
+pub type Result<T> = std::result::Result<T, RelayInformationError>;
 
 /// relay information document
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -37,7 +33,7 @@ pub struct RelayInformationDocument {
     pub icon: String,
 }
 
-/// fetch the NIP-11 metadata for a relay
+/// fetch the metadata for a relay
 pub async fn fetch(url: &str) -> Result<RelayInformationDocument> {
     let normalized_url = normalize_url(url)?;
 
@@ -101,7 +97,7 @@ mod tests {
             if expect_error {
                 assert!(result.is_err(), "expected error for URL: {}", input_url);
                 // even on error, we should get the URL back
-                if let Err(Nip11Error::Http(_)) = result {
+                if let Err(RelayInformationError::Http(_)) = result {
                     // this is expected for invalid domains
                 }
             } else {
@@ -111,7 +107,7 @@ mod tests {
                         // name might be empty for some relays, that's ok
                     }
                     Err(e) => {
-                        // some relays might not have NIP-11, that's ok too
+                        // some relays might not have metadata, that's ok too
                         println!("Warning: failed to fetch {}: {}", input_url, e);
                     }
                 }

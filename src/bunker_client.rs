@@ -4,7 +4,10 @@ use std::time::Duration;
 
 use crate::filter::TagQuery;
 use crate::SecretKey;
-use crate::{keys, nip44, pool::Pool, Event, EventTemplate, Filter, Kind, PubKey, Tags, Timestamp};
+use crate::{
+    keys, message_encryption, pool::Pool, Event, EventTemplate, Filter, Kind, PubKey, Tags,
+    Timestamp,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use slotmap::{new_key_type, Key, KeyData, SlotMap};
@@ -46,10 +49,10 @@ pub enum RPCError {
     Timeout,
 
     #[error("request encryption failed: {0}")]
-    Encryption(#[from] nip44::EncryptError),
+    Encryption(#[from] message_encryption::EncryptError),
 
     #[error("response decryption failed: {0}")]
-    Decryption(#[from] nip44::DecryptError),
+    Decryption(#[from] message_encryption::DecryptError),
 
     #[error("bunker replied with an error: {0}")]
     Response(String),
@@ -57,7 +60,7 @@ pub enum RPCError {
 
 #[derive(Error, Debug)]
 pub enum ConnectError {
-    #[error("nip-46 rpc call failed: {0}")]
+    #[error("rpc call failed: {0}")]
     RPC(#[from] RPCError),
 
     #[error("bunker uri is invalid")]
@@ -69,7 +72,7 @@ pub enum ConnectError {
 
 #[derive(Error, Debug)]
 pub enum GetPublicKeyError {
-    #[error("nip-46 rpc call failed: {0}")]
+    #[error("rpc call failed: {0}")]
     RPC(#[from] RPCError),
 
     #[error("got an invalid public key")]
@@ -84,7 +87,7 @@ pub enum FinalizeError {
     #[error("bunker gave us an event with an invalid signature")]
     InvalidSignature,
 
-    #[error("nip-46 rpc call failed: {0}")]
+    #[error("rpc call failed: {0}")]
     RPC(#[from] RPCError),
 }
 
@@ -116,7 +119,8 @@ impl BunkerClient {
         on_auth_url: Option<AuthURLHandler>,
     ) -> Self {
         let client_pubkey = client_secret_key.pubkey();
-        let conversation_key = nip44::generate_conversation_key(&target_pubkey, &client_secret_key);
+        let conversation_key =
+            message_encryption::generate_conversation_key(&target_pubkey, &client_secret_key);
 
         let bunker = Self {
             client_secret_key,
@@ -160,7 +164,8 @@ impl BunkerClient {
                                     continue;
                                 }
 
-                                if let Ok(plain) = nip44::decrypt(&event.content, &conversation_key)
+                                if let Ok(plain) =
+                                    message_encryption::decrypt(&event.content, &conversation_key)
                                 {
                                     if let Ok(resp) = serde_json::from_str::<Response>(&plain) {
                                         let rk = match lowercase_hex::decode_to_array::<&str, 8>(
@@ -201,11 +206,11 @@ impl BunkerClient {
 
     pub async fn connect(
         client_secret_key: SecretKey,
-        bunker_url_or_nip05: &str,
+        bunker_url: &str,
         pool: Pool,
         on_auth_url: Option<AuthURLHandler>,
     ) -> Result<Self, ConnectError> {
-        let url = Url::parse(bunker_url_or_nip05)?;
+        let url = Url::parse(bunker_url)?;
         let host = url
             .host_str()
             .ok_or(ConnectError::URI(url::ParseError::EmptyHost))?;
@@ -330,7 +335,7 @@ impl BunkerClient {
         };
         let req_json =
             serde_json::to_string(&req).expect("request should not fail to encode as json");
-        let content = nip44::encrypt(&req_json, &self.conversation_key, None)?;
+        let content = message_encryption::encrypt(&req_json, &self.conversation_key, None)?;
 
         let event = EventTemplate {
             content,

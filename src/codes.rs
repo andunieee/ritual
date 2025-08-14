@@ -1,7 +1,3 @@
-//! NIP-19: bech32-encoded entities
-//!
-//! this module provides encoding and decoding functions for NIP-19 bech32-encoded entities.
-
 use crate::{keys, pointers::*, Kind, PubKey, SecretKey, ID};
 use bech32::{Bech32, Hrp};
 use thiserror::Error;
@@ -47,7 +43,6 @@ pub enum DecodeResult {
     Address(AddressPointer),
 }
 
-/// decode a bech32-encoded NIP-19 string
 pub fn decode(bech32_string: &str) -> Result<DecodeResult, DecodeError> {
     let (prefix, data) = bech32::decode(bech32_string)?;
 

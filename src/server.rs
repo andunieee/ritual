@@ -4,7 +4,8 @@
 //! using hyper for HTTP and WebSocket handling.
 
 use crate::{
-    envelopes::Envelope, nip11::RelayInformationDocument, normalize_ok_message, Event, Filter,
+    envelopes::Envelope, normalize_ok_message, relay_information::RelayInformationDocument, Event,
+    Filter,
 };
 use bytes::Bytes;
 use futures::{stream::SplitSink, SinkExt, StreamExt};
@@ -47,9 +48,10 @@ pub trait CustomRelay: Send + Sync {
 
 /// main relay server
 pub struct RelayInternals {
-    /// relay information for NIP-11
+    /// relay metadata
     pub info: RelayInformationDocument,
-    /// relay methods
+
+    /// the actual relay methods
     pub custom_relay: Box<Mutex<dyn CustomRelay>>,
 }
 
@@ -176,7 +178,7 @@ pub async fn start(ri: Arc<RelayInternals>, addr: SocketAddr) -> Result<(), Star
                         }
                     }
                 } else {
-                    // check for NIP-11 request
+                    // is this a metadata request?
                     if let Some(accept) = req.headers().get("accept") {
                         if accept == "application/nostr+json" {
                             let info_json = match serde_json::to_string(&ri.info) {
@@ -195,7 +197,7 @@ pub async fn start(ri: Arc<RelayInternals>, addr: SocketAddr) -> Result<(), Star
                     // default response
                     Ok(Response::builder()
                         .status(StatusCode::OK)
-                        .body(Full::new(Bytes::from("nostr relay")))
+                        .body(Full::new(Bytes::from("nostr relay made with ritual")))
                         .unwrap())
                 }
             }
@@ -455,7 +457,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_nip11_endpoint() {
+    async fn test_metadata_endpoint() {
         let addr: SocketAddr = "127.0.0.1:8081".parse().unwrap();
         let relay = Arc::new(RelayInternals {
             info: RelayInformationDocument {
@@ -473,7 +475,7 @@ mod tests {
         // give server time to start
         sleep(Duration::from_millis(100)).await;
 
-        // make NIP-11 request
+        // request metadata
         let client = reqwest::Client::new();
         let response = client
             .get("http://127.0.0.1:8081/")
