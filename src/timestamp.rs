@@ -1,6 +1,6 @@
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// unix timestamp in seconds
 #[derive(
@@ -22,15 +22,12 @@ pub struct Timestamp(pub u32);
 
 impl Timestamp {
     pub fn now() -> Self {
-        Self(Utc::now().timestamp() as u32)
-    }
-
-    pub fn to_datetime(&self) -> DateTime<Utc> {
-        DateTime::from_timestamp(self.0 as i64, 0).unwrap_or_default()
-    }
-
-    pub fn from_datetime(dt: DateTime<Utc>) -> Self {
-        Self(dt.timestamp() as u32)
+        Self(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as u32,
+        )
     }
 }
 
@@ -67,5 +64,45 @@ impl From<Timestamp> for i64 {
 impl Default for Timestamp {
     fn default() -> Self {
         Timestamp::now()
+    }
+}
+
+// additional conversions from various integer types
+impl From<u16> for Timestamp {
+    fn from(value: u16) -> Self {
+        Self(value as u32)
+    }
+}
+
+impl From<u64> for Timestamp {
+    fn from(value: u64) -> Self {
+        Self(value as u32)
+    }
+}
+
+impl From<i32> for Timestamp {
+    fn from(value: i32) -> Self {
+        Self(value as u32)
+    }
+}
+
+impl From<usize> for Timestamp {
+    fn from(value: usize) -> Self {
+        Self(value as u32)
+    }
+}
+
+impl From<SystemTime> for Timestamp {
+    fn from(value: SystemTime) -> Self {
+        let duration = value
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        Self(duration.as_secs() as u32)
+    }
+}
+
+impl From<Timestamp> for SystemTime {
+    fn from(timestamp: Timestamp) -> Self {
+        UNIX_EPOCH + std::time::Duration::from_secs(timestamp.0 as u64)
     }
 }

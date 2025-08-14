@@ -2,7 +2,7 @@ use secp256k1::{
     global::SECP256K1, rand, Keypair, SecretKey as Secp256k1SecretKey, XOnlyPublicKey,
 };
 use serde::{de::Error, Deserialize, Deserializer, Serialize, Serializer};
-use std::fmt;
+use std::{fmt, str::FromStr};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -187,5 +187,13 @@ impl fmt::Debug for PubKey {
 impl fmt::Display for PubKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "<pk={}>", self.to_hex())
+    }
+}
+
+impl FromStr for PubKey {
+    type Err = PubKeyError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_hex(s)
     }
 }

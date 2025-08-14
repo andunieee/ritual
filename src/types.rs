@@ -1,5 +1,5 @@
 use serde::{de::Error, Deserialize, Deserializer, Serialize, Serializer};
-use std::fmt;
+use std::{fmt, str::FromStr};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -80,6 +80,14 @@ impl fmt::Debug for ID {
 impl fmt::Display for ID {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "<id={}>", self.to_hex())
+    }
+}
+
+impl FromStr for ID {
+    type Err = IDError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_hex(s)
     }
 }
 
@@ -169,6 +177,14 @@ impl fmt::Display for Signature {
     }
 }
 
+impl FromStr for Signature {
+    type Err = SignatureError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_hex(s)
+    }
+}
+
 /// event kind type
 #[derive(
     Copy,
@@ -213,5 +229,47 @@ impl Kind {
 impl fmt::Display for Kind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+impl From<u16> for Kind {
+    fn from(value: u16) -> Self {
+        Self(value)
+    }
+}
+
+impl From<Kind> for u16 {
+    fn from(kind: Kind) -> Self {
+        kind.0
+    }
+}
+
+impl From<u32> for Kind {
+    fn from(value: u32) -> Self {
+        Self(value as u16)
+    }
+}
+
+impl From<u64> for Kind {
+    fn from(value: u64) -> Self {
+        Self(value as u16)
+    }
+}
+
+impl From<i32> for Kind {
+    fn from(value: i32) -> Self {
+        Self(value as u16)
+    }
+}
+
+impl From<i64> for Kind {
+    fn from(value: i64) -> Self {
+        Self(value as u16)
+    }
+}
+
+impl From<usize> for Kind {
+    fn from(value: usize) -> Self {
+        Self(value as u16)
     }
 }
