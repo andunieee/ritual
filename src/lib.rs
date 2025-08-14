@@ -18,6 +18,7 @@ pub mod filter;
 pub mod helpers;
 pub mod keys;
 pub mod message_encryption;
+pub mod metadata;
 pub mod pointers;
 pub mod timestamp;
 
@@ -46,6 +47,7 @@ pub use event::Event;
 pub use event_template::EventTemplate;
 pub use filter::Filter;
 pub use keys::{PubKey, SecretKey};
+pub use metadata::Metadata;
 pub use normalize::*;
 pub use pointers::{AddressPointer, EventPointer, Pointer, ProfilePointer};
 pub use tags::{Tag, Tags};
