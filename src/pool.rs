@@ -9,6 +9,7 @@ use std::sync::{
     Arc,
 };
 use thiserror::Error;
+use tokio_with_wasm::alias as tokio;
 use tokio::sync::{mpsc, oneshot};
 
 #[derive(Error, Debug)]

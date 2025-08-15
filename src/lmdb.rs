@@ -1,11 +1,8 @@
-//! LMDB-based event store implementation using lmdb-master-sys
-//!
-//! This module provides an LMDB-backed event store for Nostr events.
-
 use crate::database::{DatabaseError, EventDatabase, Result};
 use crate::filter::TagQuery;
 use crate::ArchivedID;
 use crate::{event::ArchivedEvent, Event, Filter, ID};
+use fasthash::MumHasher;
 use itertools::iproduct;
 use lmdb_master_sys as lmdb;
 use rkyv::rancor;
@@ -695,7 +692,7 @@ impl LMDBEventDatabase {
                 }
             }
 
-            let mut s: lmdb_store_hasher::AHasher = Default::default();
+            let mut s: MumHasher = Default::default();
             tag[1].hash(&mut s);
             let hash = s.finish();
             key[1..1 + 8].copy_from_slice(hash.to_ne_bytes().as_slice());
