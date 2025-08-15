@@ -13,6 +13,7 @@ use serde_json::json;
 use slotmap::{new_key_type, Key, KeyData, SlotMap};
 use thiserror::Error;
 use tokio::sync::{oneshot, Mutex};
+use tokio_with_wasm::alias as tokio;
 use url::Url;
 
 #[derive(Debug, Serialize)]
@@ -94,10 +95,7 @@ pub enum FinalizeError {
 new_key_type! { struct RequestKey ; }
 
 #[derive(Clone, Debug)]
-pub struct BunkerClient
-where
-    Self: Send + Sync,
-{
+pub struct BunkerClient {
     client_secret_key: SecretKey,
     pool: Pool,
     target: PubKey,

@@ -1,4 +1,5 @@
 use crate::{Event, Kind, PubKey, Timestamp, ID};
+use fasthash::MumHasher;
 use serde::{
     de::{MapAccess, Visitor},
     Deserialize, Deserializer, Serialize, Serializer,
@@ -35,7 +36,7 @@ impl TagQuery {
                 match lowercase_hex::decode_to_slice(v, &mut key[1..1 + 8]) {
                     Ok(_) => Vec::from(&key[..]),
                     Err(_) => {
-                        let mut s: lmdb_store_hasher::AHasher = Default::default();
+                        let mut s: MumHasher = Default::default();
                         v.hash(&mut s);
                         let hash = s.finish();
                         key[1..1 + 8].copy_from_slice(&hash.to_ne_bytes());

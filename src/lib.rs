@@ -10,7 +10,6 @@
 
 pub mod bunker_client;
 pub mod codes;
-pub mod encrypted_key;
 pub mod envelopes;
 pub mod event;
 pub mod event_template;
@@ -19,27 +18,32 @@ pub mod helpers;
 pub mod keys;
 pub mod message_encryption;
 pub mod metadata;
+pub mod ncryptsec1;
 pub mod pointers;
 pub mod timestamp;
 
-#[cfg(all(not(target_arch = "wasm32"), not(target_arch = "wasm64")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod addresses;
-#[cfg(all(not(target_arch = "wasm32"), not(target_arch = "wasm64")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod lmdb;
-#[cfg(all(not(target_arch = "wasm32"), not(target_arch = "wasm64")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod relay_information;
-#[cfg(all(not(target_arch = "wasm32"), not(target_arch = "wasm64")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod server;
 
 mod database;
 mod finalizer;
 mod normalize;
+mod pool;
 mod tags;
 mod types;
 
-#[cfg(all(not(target_arch = "wasm32"), not(target_arch = "wasm64")))]
-mod pool;
-#[cfg(all(not(target_arch = "wasm32"), not(target_arch = "wasm64")))]
+#[cfg(all(not(target_arch = "wasm32")))]
+#[path = "relay_native.rs"]
+mod relay;
+
+#[cfg(target_arch = "wasm32")]
+#[path = "relay_web.rs"]
 mod relay;
 
 // re-export commonly used types
@@ -50,9 +54,13 @@ pub use keys::{PubKey, SecretKey};
 pub use metadata::Metadata;
 pub use normalize::*;
 pub use pointers::{AddressPointer, EventPointer, Pointer, ProfilePointer};
+pub use pool::Pool;
 pub use tags::{Tag, Tags};
 pub use timestamp::Timestamp;
 pub use types::*;
 
-#[cfg(all(not(target_arch = "wasm32"), not(target_arch = "wasm64")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use pool::{DirectedFilter, Pool, PoolOptions, PublishResult};
+
+#[cfg(target_arch = "wasm32")]
+pub use relay::{CloseReason, Occurrence, Relay, SubscriptionOptions};
