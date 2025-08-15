@@ -1,9 +1,12 @@
+use bech32::{Bech32, Hrp};
 use secp256k1::{
     global::SECP256K1, rand, Keypair, SecretKey as Secp256k1SecretKey, XOnlyPublicKey,
 };
 use serde::{de::Error, Deserialize, Deserializer, Serialize, Serializer};
 use std::{fmt, str::FromStr};
 use thiserror::Error;
+
+use crate::codes;
 
 #[derive(Error, Debug)]
 pub enum SecretKeyError {
@@ -83,6 +86,11 @@ impl SecretKey {
         lowercase_hex::encode(self.0)
     }
 
+    pub fn to_nsec(&self) -> String {
+        bech32::encode::<Bech32>(Hrp::parse_unchecked("nsec"), self.as_bytes())
+            .expect("failed to encode to nsec")
+    }
+
     /// get the public key for this secret key
     pub fn pubkey(&self) -> PubKey {
         let secret_key = Secp256k1SecretKey::from_byte_array(self.0).unwrap();
@@ -125,11 +133,6 @@ impl PubKey {
         &self.0
     }
 
-    pub fn as_u64_lossy(&self) -> u64 {
-        let bytes: [u8; 8] = self.0[8..16].try_into().unwrap();
-        u64::from_ne_bytes(bytes)
-    }
-
     pub fn from_hex(hex_str: &str) -> Result<Self, PubKeyError> {
         if hex_str.len() != 64 {
             return Err(PubKeyError::InvalidLength(hex_str.len() / 2));
@@ -144,8 +147,22 @@ impl PubKey {
         Ok(Self(bytes))
     }
 
+    pub fn as_u64_lossy(&self) -> u64 {
+        let bytes: [u8; 8] = self.0[8..16].try_into().unwrap();
+        u64::from_ne_bytes(bytes)
+    }
+
     pub fn to_hex(&self) -> String {
         lowercase_hex::encode(self.0)
+    }
+
+    pub fn to_npub(&self) -> String {
+        bech32::encode::<Bech32>(Hrp::parse_unchecked("npub"), self.as_bytes())
+            .expect("failed to encode to npub")
+    }
+
+    pub fn to_nprofile(&self, relays: &[String]) -> String {
+        codes::encode_nprofile(self, relays)
     }
 
     pub fn to_ecdsa_key(&self) -> secp256k1::PublicKey {

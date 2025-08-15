@@ -269,19 +269,6 @@ pub enum EncodeError {
     Bech32(#[from] bech32::EncodeError),
 }
 
-/// encode a secret key as nsec
-pub fn encode_nsec(sk: &SecretKey) -> Result<String, EncodeError> {
-    Ok(bech32::encode::<Bech32>(
-        Hrp::parse_unchecked("nsec"),
-        sk.as_bytes(),
-    )?)
-}
-
-/// encode a public key as npub
-pub fn encode_npub(pk: &PubKey) -> String {
-    bech32::encode::<Bech32>(Hrp::parse_unchecked("npub"), pk.as_bytes()).unwrap()
-}
-
 /// encode a profile pointer as nprofile
 pub fn encode_nprofile(pk: &PubKey, relays: &[String]) -> String {
     let mut buf = Vec::new();
@@ -291,7 +278,8 @@ pub fn encode_nprofile(pk: &PubKey, relays: &[String]) -> String {
         write_tlv_entry(&mut buf, TLV_RELAY, relay.as_bytes());
     }
 
-    bech32::encode::<Bech32>(Hrp::parse_unchecked("nprofile"), &buf).unwrap()
+    bech32::encode::<Bech32>(Hrp::parse_unchecked("nprofile"), &buf)
+        .expect("failed to encode nprofile")
 }
 
 /// encode an event pointer as nevent
@@ -307,7 +295,7 @@ pub fn encode_nevent(id: &ID, relays: &[String], author: Option<&PubKey>) -> Str
         write_tlv_entry(&mut buf, TLV_AUTHOR, author.as_bytes());
     }
 
-    bech32::encode::<Bech32>(Hrp::parse_unchecked("nevent"), &buf).unwrap()
+    bech32::encode::<Bech32>(Hrp::parse_unchecked("nevent"), &buf).expect("failed to encode nevent")
 }
 
 /// encode an entity pointer as naddr
@@ -324,7 +312,7 @@ pub fn encode_naddr(pk: &PubKey, kind: Kind, identifier: &str, relays: &[String]
     let kind_bytes = (kind.0 as u32).to_be_bytes();
     write_tlv_entry(&mut buf, TLV_KIND, &kind_bytes);
 
-    bech32::encode::<Bech32>(Hrp::parse_unchecked("naddr"), &buf).unwrap()
+    bech32::encode::<Bech32>(Hrp::parse_unchecked("naddr"), &buf).expect("failed to encode naddr")
 }
 
 /// encode a pointer using the appropriate encoding
@@ -332,7 +320,7 @@ pub fn encode_pointer(pointer: &Pointer) -> String {
     match pointer {
         Pointer::Profile(p) => {
             if p.relays.is_empty() {
-                encode_npub(&p.pubkey)
+                p.pubkey.to_npub()
             } else {
                 encode_nprofile(&p.pubkey, &p.relays)
             }
@@ -389,7 +377,7 @@ mod tests {
         let pk =
             PubKey::from_hex("d91191e30e00444b942c0e82cad470b32af171764c2275bee0bd99377efd4075")
                 .unwrap();
-        let npub = encode_npub(&pk);
+        let npub = pk.to_npub();
         assert_eq!(
             npub,
             "npub1mygerccwqpzyh9pvp6pv44rskv40zutkfs38t0hqhkvnwlhagp6s3psn5p"
@@ -407,7 +395,7 @@ mod tests {
     fn test_encode_decode_nsec() {
         let sk_hex = "fe20f3381b9404e9a35afb49b3dc070a4dc1ffd321ab8f3eae979ab96f601e3a";
         let sk = SecretKey::from_hex(sk_hex).unwrap();
-        let nsec = encode_nsec(&sk).unwrap();
+        let nsec = &sk.to_nsec();
         assert_eq!(
             nsec,
             "nsec1lcs0xwqmjszwng66ldym8hq8pfxurl7nyx4c704wj7dtjmmqrcaqazp4dg"
