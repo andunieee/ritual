@@ -1,15 +1,15 @@
 use crate::database::{DatabaseError, EventDatabase, Result};
-use crate::filter::TagQuery;
+use crate::filter::{TagQuery, TAG_HASHER_SEED};
 use crate::ArchivedID;
 use crate::{event::ArchivedEvent, Event, Filter, ID};
-use fasthash::MumHasher;
+use foldhash::fast::FixedState;
 use itertools::iproduct;
 use lmdb_master_sys as lmdb;
 use rkyv::rancor;
 use rkyv::rend::u16_le;
 use std::cell::Cell;
 use std::collections::VecDeque;
-use std::hash::{Hash, Hasher};
+use std::hash::{BuildHasher, Hash, Hasher};
 use std::path::Path;
 use std::rc::Rc;
 
@@ -692,7 +692,7 @@ impl LMDBEventDatabase {
                 }
             }
 
-            let mut s: MumHasher = Default::default();
+            let mut s = FixedState::with_seed(TAG_HASHER_SEED).build_hasher();
             tag[1].hash(&mut s);
             let hash = s.finish();
             key[1..1 + 8].copy_from_slice(hash.to_ne_bytes().as_slice());

@@ -1,10 +1,12 @@
 use crate::{Event, Kind, PubKey, Timestamp, ID};
-use fasthash::MumHasher;
+use foldhash::fast::FixedState;
 use serde::{
     de::{MapAccess, Visitor},
     Deserialize, Deserializer, Serialize, Serializer,
 };
-use std::hash::{Hash, Hasher};
+use std::hash::{BuildHasher, Hash, Hasher};
+
+pub const TAG_HASHER_SEED: u64 = 64;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Filter {
@@ -36,7 +38,7 @@ impl TagQuery {
                 match lowercase_hex::decode_to_slice(v, &mut key[1..1 + 8]) {
                     Ok(_) => Vec::from(&key[..]),
                     Err(_) => {
-                        let mut s: MumHasher = Default::default();
+                        let mut s = FixedState::with_seed(TAG_HASHER_SEED).build_hasher();
                         v.hash(&mut s);
                         let hash = s.finish();
                         key[1..1 + 8].copy_from_slice(&hash.to_ne_bytes());
