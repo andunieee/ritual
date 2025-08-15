@@ -54,13 +54,8 @@ pub use keys::{PubKey, SecretKey};
 pub use metadata::Metadata;
 pub use normalize::*;
 pub use pointers::{AddressPointer, EventPointer, Pointer, ProfilePointer};
-pub use pool::Pool;
+pub use pool::{DirectedFilter, Pool, PoolOptions, PublishResult};
+pub use relay::{CloseReason, Occurrence, Relay, SubscriptionOptions};
 pub use tags::{Tag, Tags};
 pub use timestamp::Timestamp;
 pub use types::*;
-
-#[cfg(not(target_arch = "wasm32"))]
-pub use pool::{DirectedFilter, Pool, PoolOptions, PublishResult};
-
-#[cfg(target_arch = "wasm32")]
-pub use relay::{CloseReason, Occurrence, Relay, SubscriptionOptions};
