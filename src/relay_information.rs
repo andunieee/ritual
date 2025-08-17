@@ -83,12 +83,13 @@ mod tests {
     async fn test_fetch() {
         let test_cases = vec![
             ("wss://nostr.wine", false, "wss://nostr.wine/"),
-            ("https://nostr.wine", false, "wss://nostr.wine/"),
+            ("https://nostr.land", false, "wss://nostr.land/"),
             ("nostr.wine", false, "wss://nostr.wine/"),
-            ("no.str.cr", false, "wss://no.str.cr/"),
-            ("https://no.str.cr", false, "wss://no.str.cr/"),
-            ("wss://no.str.cr", false, "wss://no.str.cr/"),
+            ("relay.damus.io", false, "wss://relay.damus.io/"),
+            ("https://relay.nostr.band", false, "wss://relay.nostr.band/"),
+            ("wss://relay.primal.net", false, "wss://relay.primal.net/"),
             ("wlenwqkeqwe.asjdaskd", true, "wss://wlenwqkeqwe.asjdaskd/"),
+            ("bligblag", true, "wss://bligblag/"),
         ];
 
         for (input_url, expect_error, expected_url) in test_cases {

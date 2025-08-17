@@ -576,7 +576,6 @@ mod tests {
         assert_eq!(received.kind, Kind(1));
 
         // cleanup
-        relay.close().await;
         server_handle.abort();
     }
 
@@ -744,7 +743,6 @@ mod tests {
         assert!(multiple_of_three_timestamps.contains(&108));
 
         // cleanup
-        pool.close().await;
         even_handle.abort();
         odd_handle.abort();
         multiple_of_three_handle.abort();

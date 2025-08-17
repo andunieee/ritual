@@ -124,12 +124,12 @@ impl Relay {
         });
 
         // setup message handler
+        let write_queue = relay.write_queue.clone();
         let id_skippers_map = relay.id_skippers_map.clone();
         let sub_sender_map = relay.sub_sender_map.clone();
         let relay_challenge = relay.challenge.clone();
         let ok_callbacks = relay.ok_callbacks.clone();
         let relay_url = relay.url.to_string();
-        let relay_ws = ws.clone();
 
         let on_message = Closure::wrap(Box::new(move |e: MessageEvent| {
             if let Ok(text) = e.data().dyn_into::<js_sys::JsString>() {
@@ -137,158 +137,24 @@ impl Relay {
 
                 log::info!("got message from {}: {}", &relay_url, &message);
 
+                let write_queue = write_queue.clone();
                 let id_skippers_map = id_skippers_map.clone();
                 let sub_sender_map = sub_sender_map.clone();
                 let relay_challenge = relay_challenge.clone();
                 let ok_callbacks = ok_callbacks.clone();
                 let relay_url = relay_url.to_string();
-                let relay_ws = relay_ws.clone();
 
                 tokio::spawn(async move {
-                    // check for duplicate events
-
-                    match extract_key_from_sub_id(&message) {
-                        None => {}
-                        Some(sub_key) => {
-                            if let Some(skip_ids) = id_skippers_map.lock().await.get(sub_key) {
-                                if let Some(id) = extract_event_id(&message) {
-                                    let wasnt = skip_ids.insert(id);
-                                    if !wasnt {
-                                        // this id was already known
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // parse the message
-                    match serde_json::from_str::<Envelope>(&message) {
-                        Ok(Envelope::InEvent {
-                            subscription_id,
-                            event,
-                        }) => {
-                            let key = key_from_sub_id(subscription_id.as_str());
-                            if let Some(sub) = sub_sender_map.lock().await.get(key) {
-                                if sub.filter.matches(&event) && event.verify_signature() {
-                                    let _ = sub.ocurrences_sender.send(Occurrence::Event(event));
-                                }
-                            }
-                        }
-                        Ok(Envelope::Eose { subscription_id }) => {
-                            let key = key_from_sub_id(subscription_id.as_str());
-                            let mut map = sub_sender_map.lock().await;
-                            if let Some(occfilter) = map.get_mut(key) {
-                                // since we got an EOSE our internal filter won't check for since/until anymore
-                                occfilter.filter.since = None;
-                                occfilter.filter.until = None;
-
-                                // and we dispatch this to the listener
-                                let _ = occfilter.ocurrences_sender.send(Occurrence::EOSE);
-                            }
-                        }
-                        Ok(Envelope::Ok {
-                            event_id,
-                            ok,
-                            reason,
-                        }) => match ok_callbacks.remove(&event_id) {
-                            Some((_, sender)) => {
-                                let _ = sender.send(match ok {
-                                    true => Ok(()),
-                                    false => Err(reason),
-                                });
-                            }
-                            None => {
-                                log::info!(
-                                    "received OK for unknown event {}: {} - {}",
-                                    event_id,
-                                    ok,
-                                    reason
-                                );
-                            }
-                        },
-                        Ok(Envelope::Notice(notice)) => {
-                            web_sys::console::log_1(
-                                &format!("[{}] received notice: {}", &relay_url, notice).into(),
-                            );
-                        }
-                        Ok(Envelope::Closed {
-                            subscription_id,
-                            reason,
-                        }) => {
-                            let key = key_from_sub_id(&subscription_id);
-                            let mut ssm = sub_sender_map.lock().await;
-                            if let Some(sub) = ssm.get_mut(key) {
-                                if reason.starts_with("auth-required:") {
-                                    if let Some(challenge) = relay_challenge.read().await.clone() {
-                                        if let Some(finalizer) = sub.auth_automatically.take() {
-                                            // instead of ending here after a CLOSED we will perform AUTH
-                                            let result = finalizer.finalize_event(EventTemplate {
-                                                created_at: Timestamp::now(),
-                                                kind: Kind(22242),
-                                                content: "".to_string(),
-                                                tags: Tags(vec![
-                                                    vec![
-                                                        "relay".to_string(),
-                                                        relay_url.to_string(),
-                                                    ],
-                                                    vec!["challenge".to_string(), challenge],
-                                                ]),
-                                            });
-                                            if let Ok(auth_event) = result.await {
-                                                // send the AUTH message and wait for an OK
-                                                let (tx, rx) = oneshot::channel();
-                                                ok_callbacks.insert(auth_event.id.clone(), tx);
-
-                                                let _ = relay_ws.send_with_str(
-                                                    &serde_json::to_string(&Envelope::AuthEvent {
-                                                        event: auth_event,
-                                                    })
-                                                    .unwrap(),
-                                                );
-
-                                                if let Ok(_) = rx.await {
-                                                    // then restart the subscription
-                                                    let _ = relay_ws.send_with_str(
-                                                        &serde_json::to_string(&Envelope::Req {
-                                                            subscription_id: subscription_id,
-                                                            filters: vec![sub.filter.clone()],
-                                                        })
-                                                        .unwrap(),
-                                                    );
-
-                                                    // and set this option to false this time to prevent an infinite
-                                                    // AUTH loop
-                                                    sub.auth_automatically = None;
-                                                    return;
-                                                }
-                                            };
-                                        }
-                                    }
-                                }
-                            }
-
-                            // now that we checked for that circumstance and didn't hit the `continue`
-                            // we can proceed to remove this subscription and issue the final `Close`
-                            if let Some(sub) = ssm.remove(key) {
-                                let _ = sub
-                                    .ocurrences_sender
-                                    .send(Occurrence::Close(CloseReason::ClosedByThemWithReason(
-                                        reason,
-                                    )))
-                                    .await;
-                            }
-                        }
-                        Ok(Envelope::AuthChallenge { challenge }) => {
-                            let _ = relay_challenge.write().await.insert(challenge);
-                        }
-                        Ok(envelope) => {
-                            log::info!("[{}] unexpected message: {}", &relay_url, envelope.label());
-                        }
-                        Err(err) => {
-                            log::info!("[{}] wrong message: {}", &relay_url, err,);
-                        }
-                    }
+                    handle_nostr_envelope(
+                        message,
+                        write_queue,
+                        relay_challenge,
+                        sub_sender_map,
+                        id_skippers_map,
+                        ok_callbacks,
+                        relay_url,
+                    )
+                    .await;
                 });
             }
         }) as Box<dyn FnMut(MessageEvent)>);
@@ -464,156 +330,16 @@ impl Relay {
                 }
 
                 let message = String::from_utf8_lossy(&buf);
-
-                match extract_key_from_sub_id(&message) {
-                    None => {}
-                    Some(sub_key) => {
-                        if let Some(skip_ids) = id_skippers_map.lock().await.get(sub_key) {
-                            if let Some(id) = extract_event_id(&message) {
-                                let wasnt = skip_ids.insert(id);
-                                if !wasnt {
-                                    // this id was already known
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // parse the message
-                match serde_json::from_str::<Envelope>(&message) {
-                    Ok(Envelope::InEvent {
-                        subscription_id,
-                        event,
-                    }) => {
-                        if let Some(sub) = sub_sender_map
-                            .lock()
-                            .await
-                            .get(key_from_sub_id(subscription_id.as_str()))
-                        {
-                            if sub.filter.matches(&event) && event.verify_signature() {
-                                let _ = sub.ocurrences_sender.send(Occurrence::Event(event)).await;
-                            } else {
-                                // TODO: penalize this relay?
-                            }
-                        };
-                    }
-                    Ok(Envelope::Eose { subscription_id }) => {
-                        let key = key_from_sub_id(subscription_id.as_str());
-                        let mut map = sub_sender_map.lock().await;
-                        if let Some(occfilter) = map.get_mut(key) {
-                            // since we got an EOSE our internal filter won't check for since/until anymore
-                            occfilter.filter.since = None;
-                            occfilter.filter.until = None;
-
-                            // and we dispatch this to the listener
-                            let _ = occfilter.ocurrences_sender.send(Occurrence::EOSE).await;
-                        };
-                    }
-                    Ok(Envelope::Ok {
-                        event_id,
-                        ok,
-                        reason,
-                    }) => match ok_callbacks.remove(&event_id) {
-                        Some((_, sender)) => {
-                            let _ = sender.send(match ok {
-                                true => Ok(()),
-                                false => Err(reason),
-                            });
-                        }
-                        None => {
-                            log::info!(
-                                "received OK for unknown event {}: {} - {}",
-                                event_id,
-                                ok,
-                                reason
-                            );
-                        }
-                    },
-                    Ok(Envelope::Notice(notice)) => {
-                        log::info!("[{}] received notice: {}", url.as_str(), notice);
-                    }
-                    Ok(Envelope::Closed {
-                        subscription_id,
-                        reason,
-                    }) => {
-                        let key = key_from_sub_id(&subscription_id);
-                        let mut ssm = sub_sender_map.lock().await;
-                        if let Some(sub) = ssm.get_mut(key) {
-                            if reason.starts_with("auth-required:") {
-                                if let Some(challenge) = relay_challenge.read().await.clone() {
-                                    if let Some(finalizer) = sub.auth_automatically.take() {
-                                        // instead of ending here after a CLOSED we will perform AUTH
-                                        let result = finalizer.finalize_event(EventTemplate {
-                                            created_at: Timestamp::now(),
-                                            kind: Kind(22242),
-                                            content: "".to_string(),
-                                            tags: Tags(vec![
-                                                vec!["relay".to_string(), relay_url.to_string()],
-                                                vec!["challenge".to_string(), challenge],
-                                            ]),
-                                        });
-                                        if let Ok(auth_event) = result.await {
-                                            // send the AUTH message and wait for an OK
-                                            let (tx, rx) = oneshot::channel();
-                                            ok_callbacks.insert(auth_event.id.clone(), tx);
-                                            let _ = write_queue
-                                                .send(
-                                                    serde_json::to_string(&Envelope::AuthEvent {
-                                                        event: auth_event,
-                                                    })
-                                                    .unwrap(),
-                                                )
-                                                .await;
-
-                                            if let Ok(_) = rx.await {
-                                                // then restart the subscription
-                                                let _ = write_queue
-                                                    .send(
-                                                        serde_json::to_string(&Envelope::Req {
-                                                            subscription_id: subscription_id,
-                                                            filters: vec![sub.filter.clone()],
-                                                        })
-                                                        .unwrap(),
-                                                    )
-                                                    .await;
-
-                                                // and set this option to false this time to prevent an infinite
-                                                // AUTH loop
-                                                sub.auth_automatically = None;
-                                                continue;
-                                            }
-                                        };
-                                    }
-                                }
-                            }
-                        }
-
-                        // now that we checked for that circumstance and didn't hit the `continue`
-                        // we can proceed to remove this subscription and issue the final `Close`
-                        if let Some(sub) = ssm.remove(key) {
-                            let _ = sub
-                                .ocurrences_sender
-                                .send(Occurrence::Close(CloseReason::ClosedByThemWithReason(
-                                    reason,
-                                )))
-                                .await;
-                        }
-                    }
-                    Ok(Envelope::AuthChallenge { challenge }) => {
-                        let _ = relay_challenge.write().await.insert(challenge);
-                    }
-                    Ok(envelope) => {
-                        log::info!(
-                            "[{}] unexpected message: {}",
-                            url.as_str(),
-                            envelope.label()
-                        );
-                    }
-                    Err(err) => {
-                        log::info!("[{}] wrong message: {}", url.as_str(), err);
-                    }
-                }
+                handle_nostr_envelope(
+                    message.to_string(),
+                    write_queue.clone(),
+                    relay_challenge.clone(),
+                    sub_sender_map.clone(),
+                    id_skippers_map.clone(),
+                    ok_callbacks.clone(),
+                    relay_url.to_string(),
+                )
+                .await;
             }
         });
 
@@ -707,6 +433,163 @@ impl Drop for Relay {
 impl std::fmt::Display for Relay {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "<relay url={}>", self.url)
+    }
+}
+
+#[inline]
+async fn handle_nostr_envelope(
+    message: String,
+    write_queue: mpsc::Sender<String>,
+    relay_challenge: Arc<RwLock<Option<String>>>,
+    sub_sender_map: Arc<Mutex<SlotMap<SubscriptionKey, SubSender>>>,
+    id_skippers_map: Arc<Mutex<SecondaryMap<SubscriptionKey, Arc<DashSet<ID>>>>>,
+    ok_callbacks: Arc<DashMap<ID, oneshot::Sender<Result<(), String>>>>,
+    relay_url: String,
+) {
+    match extract_key_from_sub_id(&message) {
+        None => {}
+        Some(sub_key) => {
+            if let Some(skip_ids) = id_skippers_map.lock().await.get(sub_key) {
+                if let Some(id) = extract_event_id(&message) {
+                    let wasnt = skip_ids.insert(id);
+                    if !wasnt {
+                        // this id was already known
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    // parse the message
+    match serde_json::from_str::<Envelope>(&message) {
+        Ok(Envelope::InEvent {
+            subscription_id,
+            event,
+        }) => {
+            if let Some(sub) = sub_sender_map
+                .lock()
+                .await
+                .get(key_from_sub_id(subscription_id.as_str()))
+            {
+                if sub.filter.matches(&event) && event.verify_signature() {
+                    let _ = sub.ocurrences_sender.send(Occurrence::Event(event)).await;
+                } else {
+                    // TODO: penalize this relay?
+                }
+            };
+        }
+        Ok(Envelope::Eose { subscription_id }) => {
+            let key = key_from_sub_id(subscription_id.as_str());
+            let mut map = sub_sender_map.lock().await;
+            if let Some(occfilter) = map.get_mut(key) {
+                // since we got an EOSE our internal filter won't check for since/until anymore
+                occfilter.filter.since = None;
+                occfilter.filter.until = None;
+
+                // and we dispatch this to the listener
+                let _ = occfilter.ocurrences_sender.send(Occurrence::EOSE).await;
+            };
+        }
+        Ok(Envelope::Ok {
+            event_id,
+            ok,
+            reason,
+        }) => match ok_callbacks.remove(&event_id) {
+            Some((_, sender)) => {
+                let _ = sender.send(match ok {
+                    true => Ok(()),
+                    false => Err(reason),
+                });
+            }
+            None => {
+                log::info!(
+                    "received OK for unknown event {}: {} - {}",
+                    event_id,
+                    ok,
+                    reason
+                );
+            }
+        },
+        Ok(Envelope::Notice(notice)) => {
+            log::info!("[{}] received notice: {}", relay_url.as_str(), notice);
+        }
+        Ok(Envelope::Closed {
+            subscription_id,
+            reason,
+        }) => {
+            let key = key_from_sub_id(&subscription_id);
+            let mut ssm = sub_sender_map.lock().await;
+            if let Some(sub) = ssm.get_mut(key) {
+                if reason.starts_with("auth-required:") {
+                    if let Some(challenge) = relay_challenge.read().await.clone() {
+                        if let Some(finalizer) = sub.auth_automatically.take() {
+                            // instead of ending here after a CLOSED we will perform AUTH
+                            let result = finalizer.finalize_event(EventTemplate {
+                                created_at: Timestamp::now(),
+                                kind: Kind(22242),
+                                content: "".to_string(),
+                                tags: Tags(vec![
+                                    vec!["relay".to_string(), relay_url.to_string()],
+                                    vec!["challenge".to_string(), challenge],
+                                ]),
+                            });
+                            if let Ok(auth_event) = result.await {
+                                // send the AUTH message and wait for an OK
+                                let (tx, rx) = oneshot::channel();
+                                ok_callbacks.insert(auth_event.id.clone(), tx);
+                                let _ = write_queue
+                                    .send(
+                                        serde_json::to_string(&Envelope::AuthEvent {
+                                            event: auth_event,
+                                        })
+                                        .unwrap(),
+                                    )
+                                    .await;
+
+                                if let Ok(_) = rx.await {
+                                    // then restart the subscription
+                                    let _ = write_queue
+                                        .send(
+                                            serde_json::to_string(&Envelope::Req {
+                                                subscription_id: subscription_id,
+                                                filters: vec![sub.filter.clone()],
+                                            })
+                                            .unwrap(),
+                                        )
+                                        .await;
+
+                                    // and set this option to false this time to prevent an infinite
+                                    // AUTH loop
+                                    sub.auth_automatically = None;
+                                    return;
+                                }
+                            };
+                        }
+                    }
+                }
+            }
+
+            // now that we checked for that circumstance and didn't hit the `continue`
+            // we can proceed to remove this subscription and issue the final `Close`
+            if let Some(sub) = ssm.remove(key) {
+                let _ = sub
+                    .ocurrences_sender
+                    .send(Occurrence::Close(CloseReason::ClosedByThemWithReason(
+                        reason,
+                    )))
+                    .await;
+            }
+        }
+        Ok(Envelope::AuthChallenge { challenge }) => {
+            let _ = relay_challenge.write().await.insert(challenge);
+        }
+        Ok(envelope) => {
+            log::info!("[{}] unexpected message: {}", &relay_url, envelope.label());
+        }
+        Err(err) => {
+            log::info!("[{}] wrong message: {}", &relay_url, err);
+        }
     }
 }
 
