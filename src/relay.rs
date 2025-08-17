@@ -100,8 +100,6 @@ impl Relay {
         use web_sys::{CloseEvent, ErrorEvent, MessageEvent, WebSocket};
 
         // create websocket
-        log::info!("relay {}", url);
-
         let (write_sender, mut write_receiver) = mpsc::channel(1);
 
         let relay = Self {
@@ -135,7 +133,7 @@ impl Relay {
             if let Ok(text) = e.data().dyn_into::<js_sys::JsString>() {
                 let message: String = text.into();
 
-                log::info!("got message from {}: {}", &relay_url, &message);
+                log::debug!("got message from {}: {}", &relay_url, &message);
 
                 let write_queue = write_queue.clone();
                 let id_skippers_map = id_skippers_map.clone();
