@@ -34,6 +34,7 @@ chacha20poly1305 = "0.10"
 itertools = "0.14.0"
 rkyv = "0.8.11"
 foldhash = "0.1.5"
+log = "0.4"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio_with_wasm = { version = "0.8.7", features = ["rt", "sync", "time"] }

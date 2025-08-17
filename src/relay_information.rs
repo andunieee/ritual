@@ -107,8 +107,7 @@ mod tests {
                         // name might be empty for some relays, that's ok
                     }
                     Err(e) => {
-                        // some relays might not have metadata, that's ok too
-                        println!("Warning: failed to fetch {}: {}", input_url, e);
+                        panic!("warning: failed to fetch {}: {}", input_url, e);
                     }
                 }
             }

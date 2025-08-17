@@ -35,6 +35,7 @@ mod database;
 mod finalizer;
 mod normalize;
 mod pool;
+mod relay_types;
 mod tags;
 mod types;
 

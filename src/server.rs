@@ -82,7 +82,7 @@ pub enum ServiceError {
 /// start the relay server
 pub async fn start(ri: Arc<RelayInternals>, addr: SocketAddr) -> Result<(), StartError> {
     let listener = TcpListener::bind(addr).await?;
-    println!("relay listening on {}", addr);
+    log::info!("relay listening on {}", addr);
 
     async fn service(
         req: Request<Incoming>,
@@ -163,7 +163,7 @@ pub async fn start(ri: Arc<RelayInternals>, addr: SocketAddr) -> Result<(), Star
                                         });
                                     }
                                     Err(e) => {
-                                        println!("websocket upgrade failed: {}", e);
+                                        log::debug!("websocket upgrade failed: {}", e);
                                     }
                                 }
                             });
@@ -173,7 +173,7 @@ pub async fn start(ri: Arc<RelayInternals>, addr: SocketAddr) -> Result<(), Star
                             )
                         }
                         Err(e) => {
-                            println!("websocket upgrade error: {}", e);
+                            log::debug!("websocket upgrade error: {}", e);
                             Err(ServiceError::WebSocket)
                         }
                     }
@@ -223,7 +223,7 @@ pub async fn start(ri: Arc<RelayInternals>, addr: SocketAddr) -> Result<(), Star
                 .with_upgrades();
 
             if let Err(err) = conn.await {
-                println!("error serving connection: {:?}", err);
+                log::debug!("error serving connection: {:?}", err);
             }
         });
     }

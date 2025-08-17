@@ -2,6 +2,10 @@ use crate::finalizer::Finalizer;
 use crate::helpers::{
     extract_event_id, extract_key_from_sub_id, key_from_sub_id, sub_id_from_key, SubscriptionKey,
 };
+use crate::relay_types::SubSender;
+pub use crate::relay_types::{
+    CloseReason, ConnectError, Occurrence, PublishError, SubscriptionOptions,
+};
 use crate::{envelopes::*, Event, EventTemplate, Filter, Kind, Tags, Timestamp, ID};
 use dashmap::{DashMap, DashSet};
 use futures::stream::SplitSink;
@@ -18,33 +22,8 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async_tls_with_config, MaybeTlsStream, WebSocketStream};
 use url::Url;
 
-#[derive(Error, Debug)]
-pub enum PublishError {
-    #[error("ok=false, relay message: {0}")]
-    NotOK(String),
-
-    #[error("internal channel error, relay connection might have closed")]
-    Channel,
-}
-
-#[derive(Error, Debug)]
-pub enum ConnectError {
-    #[error("relay connection error")]
-    Websocket,
-}
-
-#[derive(Debug)]
-pub(crate) struct SubSender {
-    pub(crate) ocurrences_sender: mpsc::Sender<Occurrence>,
-    pub(crate) filter: Filter,
-    pub(crate) auth_automatically: Option<Finalizer>,
-}
-
 #[derive(Clone, Debug)]
-pub struct Relay
-where
-    Self: Send + Sync,
-{
+pub struct Relay {
     pub url: Url,
     // by connection
     challenge: Arc<RwLock<Option<String>>>,
@@ -110,7 +89,7 @@ impl Relay {
                     .send(Message::Ping(vec![].into()))
                     .await
                 {
-                    println!("ping failed: {}", err);
+                    log::info!("ping failed: {}", err);
                     break;
                 }
             }
@@ -235,14 +214,16 @@ impl Relay {
                             });
                         }
                         None => {
-                            println!(
+                            log::info!(
                                 "received OK for unknown event {}: {} - {}",
-                                event_id, ok, reason
+                                event_id,
+                                ok,
+                                reason
                             );
                         }
                     },
                     Ok(Envelope::Notice(notice)) => {
-                        println!("[{}] received notice: {}", url.as_str(), notice);
+                        log::info!("[{}] received notice: {}", url.as_str(), notice);
                     }
                     Ok(Envelope::Closed {
                         subscription_id,
@@ -315,14 +296,14 @@ impl Relay {
                         let _ = relay_challenge.write().await.insert(challenge);
                     }
                     Ok(envelope) => {
-                        println!(
+                        log::info!(
                             "[{}] unexpected message: {}",
                             url.as_str(),
                             envelope.label()
                         );
                     }
                     Err(err) => {
-                        println!("[{}] wrong message: {}", url.as_str(), err);
+                        log::info!("[{}] wrong message: {}", url.as_str(), err);
                     }
                 }
             }
@@ -402,16 +383,23 @@ impl Relay {
 
         occurrences
     }
+}
 
-    pub async fn close(self) -> () {
-        for (_, sub) in self.sub_sender_map.lock().await.drain() {
-            let _ = sub
-                .ocurrences_sender
-                .send(Occurrence::Close(CloseReason::RelayConnectionClosedByUs))
-                .await;
-        }
+impl Drop for Relay {
+    fn drop(&mut self) {
+        let sub_sender_map = self.sub_sender_map.clone();
+        let conn_Write = self.conn_write.clone();
 
-        let _ = self.conn_write.lock().await.close().await;
+        tokio::spawn(async move {
+            for (_, sub) in self.sub_sender_map.lock().await.drain() {
+                let _ = sub
+                    .ocurrences_sender
+                    .send(Occurrence::Close(CloseReason::RelayConnectionClosedByUs))
+                    .await;
+            }
+
+            let _ = conn_write.lock().await.close().await;
+        });
     }
 }
 
@@ -458,30 +446,4 @@ mod tests {
 
         assert_eq!(pre_eose_count, 5);
     }
-}
-
-#[derive(Debug)]
-pub enum CloseReason {
-    RelayConnectionClosedByUs,
-    RelayConnectionClosedByThem(Option<CloseFrame>),
-    RelayConnectionError,
-    ClosedByUs,
-    ClosedByThemWithReason(String),
-    Unknown,
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct SubscriptionOptions {
-    pub label: Option<String>,
-    pub timeout: Option<Duration>,
-    pub auth_automatically: Option<Finalizer>,
-
-    pub(crate) skip_ids: Option<Arc<DashSet<ID>>>,
-}
-
-#[derive(Debug)]
-pub enum Occurrence {
-    Event(Event),
-    EOSE,
-    Close(CloseReason),
 }

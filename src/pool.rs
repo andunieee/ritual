@@ -9,8 +9,8 @@ use std::sync::{
     Arc,
 };
 use thiserror::Error;
-use tokio_with_wasm::alias as tokio;
 use tokio::sync::{mpsc, oneshot};
+use tokio_with_wasm::alias as tokio;
 
 #[derive(Error, Debug)]
 pub enum EnsureError {
@@ -93,13 +93,13 @@ impl Pool {
         tokio::spawn(async move {
             match handle_close.await {
                 Ok(reason) => {
-                    println!("[{}] relay connection closed: {}", nm_.as_str(), reason);
+                    log::info!("[{}] relay connection closed: {}", nm_.as_str(), reason);
 
                     // the relay connection will be dropped from the map if it disconnects
                     relays_map.remove(nm_.as_str());
                 }
                 Err(err) => {
-                    println!(
+                    log::info!(
                         "got an error from the handle_close oneshot for {}: {}",
                         nm_.as_str(),
                         err
@@ -255,7 +255,7 @@ impl Pool {
 
                 if closed_counter.fetch_sub(1, Ordering::SeqCst) == 1 {
                     if tx
-                        .send(Occurrence::Close(crate::relay::CloseReason::Unknown))
+                        .send(Occurrence::Close(crate::relay_types::CloseReason::Unknown))
                         .await
                         .is_err()
                     {
@@ -268,14 +268,6 @@ impl Pool {
 
         drop(tx);
         rx
-    }
-
-    /// close the pool
-    pub async fn close(self) {
-        for relay in self.relays.iter() {
-            let _ = relay.clone().close().await;
-        }
-        self.relays.clear(); // this has to be called as the "on_close" handler won't be triggered
     }
 }
 
