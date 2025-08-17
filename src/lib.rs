@@ -35,17 +35,9 @@ mod database;
 mod finalizer;
 mod normalize;
 mod pool;
-mod relay_types;
+mod relay;
 mod tags;
 mod types;
-
-#[cfg(all(not(target_arch = "wasm32")))]
-#[path = "relay_native.rs"]
-mod relay;
-
-#[cfg(target_arch = "wasm32")]
-#[path = "relay_web.rs"]
-mod relay;
 
 // re-export commonly used types
 pub use event::Event;

@@ -255,7 +255,7 @@ impl Pool {
 
                 if closed_counter.fetch_sub(1, Ordering::SeqCst) == 1 {
                     if tx
-                        .send(Occurrence::Close(crate::relay_types::CloseReason::Unknown))
+                        .send(Occurrence::Close(crate::relay::CloseReason::Unknown))
                         .await
                         .is_err()
                     {

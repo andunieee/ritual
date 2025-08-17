@@ -1,34 +1,86 @@
-use crate::finalizer::Finalizer;
-use crate::helpers::{
-    extract_event_id, extract_key_from_sub_id, key_from_sub_id, sub_id_from_key, SubscriptionKey,
+use crate::{
+    envelopes::Envelope,
+    finalizer::Finalizer,
+    helpers::{
+        extract_event_id, extract_key_from_sub_id, key_from_sub_id, sub_id_from_key,
+        SubscriptionKey,
+    },
+    Event, EventTemplate, Filter, Kind, Tags, Timestamp, ID,
 };
-use crate::relay_types::SubSender;
-pub use crate::relay_types::{
-    CloseReason, ConnectError, Occurrence, PublishError, SubscriptionOptions,
-};
-use crate::{envelopes::*, Event, EventTemplate, Filter, Kind, Tags, Timestamp, ID};
 use dashmap::{DashMap, DashSet};
-use futures::stream::SplitSink;
-use futures::{SinkExt, StreamExt, TryFutureExt};
-use hyper_tungstenite::tungstenite::client::IntoClientRequest;
 use slotmap::{SecondaryMap, SlotMap};
-use std::sync::Arc;
-use thiserror::Error;
-use tokio::net::TcpStream;
+use std::{sync::Arc, time::Duration};
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
-use tokio::time::{interval, Duration};
-use tokio_tungstenite::tungstenite::protocol::CloseFrame;
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async_tls_with_config, MaybeTlsStream, WebSocketStream};
 use url::Url;
 
-#[derive(Clone, Debug)]
+#[cfg(target_arch = "wasm32")]
+use tokio_with_wasm::alias as tokio;
+
+#[derive(thiserror::Error, Debug)]
+pub enum PublishError {
+    #[error("ok=false, relay message: {0}")]
+    NotOK(String),
+
+    #[error("internal channel error, relay connection might have closed")]
+    Channel,
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum ConnectError {
+    #[error("relay connection error")]
+    Websocket,
+}
+
+#[derive(Debug)]
+pub(crate) struct SubSender {
+    pub(crate) ocurrences_sender: mpsc::Sender<Occurrence>,
+    pub(crate) filter: Filter,
+    pub(crate) auth_automatically: Option<Finalizer>,
+}
+
+#[derive(Debug)]
+pub enum CloseReason {
+    RelayConnectionClosedByUs,
+    RelayConnectionClosedByThem(Option<String>),
+    RelayConnectionError,
+    ClosedByUs,
+    ClosedByThemWithReason(String),
+    Unknown,
+}
+
+#[derive(Default, Clone)]
+pub struct SubscriptionOptions {
+    pub label: Option<String>,
+    pub timeout: Option<Duration>,
+    pub auth_automatically: Option<Finalizer>,
+
+    pub(crate) skip_ids: Option<Arc<DashSet<ID>>>,
+}
+
+impl std::fmt::Debug for SubscriptionOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("label", &self.label)
+            .field("timeout", &self.timeout)
+            .field("auth_automatically", &self.auth_automatically)
+            .field("skip_ids", &self.skip_ids)
+            .finish()
+    }
+}
+
+#[derive(Debug)]
+pub enum Occurrence {
+    Event(Event),
+    EOSE,
+    Close(CloseReason),
+}
+
+#[derive(Debug, Clone)]
 pub struct Relay {
     pub url: Url,
     // by connection
-    challenge: Arc<RwLock<Option<String>>>,
-    conn_write: Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>,
     write_queue: mpsc::Sender<String>,
+    challenge: Arc<RwLock<Option<String>>>,
 
     // by subscription
     pub(crate) sub_sender_map: Arc<Mutex<SlotMap<SubscriptionKey, SubSender>>>,
@@ -39,10 +91,264 @@ pub struct Relay {
 }
 
 impl Relay {
+    #[cfg(target_arch = "wasm32")]
     pub async fn connect(
         url: Url,
         mut on_close: Option<oneshot::Sender<String>>,
     ) -> Result<Self, ConnectError> {
+        use wasm_bindgen::{closure::Closure, JsCast, JsValue};
+        use web_sys::{CloseEvent, ErrorEvent, MessageEvent, WebSocket};
+
+        // create websocket
+        log::info!("relay {}", url);
+
+        let (write_sender, mut write_receiver) = mpsc::channel(1);
+
+        let relay = Self {
+            url: url.clone(),
+            write_queue: write_sender,
+            sub_sender_map: Arc::new(Mutex::new(SlotMap::with_capacity_and_key(8))),
+            id_skippers_map: Arc::new(Mutex::new(SecondaryMap::with_capacity(8))),
+            challenge: Arc::new(RwLock::new(None)),
+            ok_callbacks: Arc::new(DashMap::new()),
+        };
+
+        let ws = Arc::new(WebSocket::new(url.as_str()).map_err(|_| ConnectError::Websocket)?);
+
+        // start write queue handler
+        let queue_writer = ws.clone();
+        tokio::spawn(async move {
+            while let Some(text) = write_receiver.recv().await {
+                let _ = queue_writer.send_with_str(&text);
+            }
+        });
+
+        // setup message handler
+        let id_skippers_map = relay.id_skippers_map.clone();
+        let sub_sender_map = relay.sub_sender_map.clone();
+        let relay_challenge = relay.challenge.clone();
+        let ok_callbacks = relay.ok_callbacks.clone();
+        let relay_url = relay.url.to_string();
+        let relay_ws = ws.clone();
+
+        let on_message = Closure::wrap(Box::new(move |e: MessageEvent| {
+            if let Ok(text) = e.data().dyn_into::<js_sys::JsString>() {
+                let message: String = text.into();
+
+                log::info!("got message from {}: {}", &relay_url, &message);
+
+                let id_skippers_map = id_skippers_map.clone();
+                let sub_sender_map = sub_sender_map.clone();
+                let relay_challenge = relay_challenge.clone();
+                let ok_callbacks = ok_callbacks.clone();
+                let relay_url = relay_url.to_string();
+                let relay_ws = relay_ws.clone();
+
+                tokio::spawn(async move {
+                    // check for duplicate events
+
+                    match extract_key_from_sub_id(&message) {
+                        None => {}
+                        Some(sub_key) => {
+                            if let Some(skip_ids) = id_skippers_map.lock().await.get(sub_key) {
+                                if let Some(id) = extract_event_id(&message) {
+                                    let wasnt = skip_ids.insert(id);
+                                    if !wasnt {
+                                        // this id was already known
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // parse the message
+                    match serde_json::from_str::<Envelope>(&message) {
+                        Ok(Envelope::InEvent {
+                            subscription_id,
+                            event,
+                        }) => {
+                            let key = key_from_sub_id(subscription_id.as_str());
+                            if let Some(sub) = sub_sender_map.lock().await.get(key) {
+                                if sub.filter.matches(&event) && event.verify_signature() {
+                                    let _ = sub.ocurrences_sender.send(Occurrence::Event(event));
+                                }
+                            }
+                        }
+                        Ok(Envelope::Eose { subscription_id }) => {
+                            let key = key_from_sub_id(subscription_id.as_str());
+                            let mut map = sub_sender_map.lock().await;
+                            if let Some(occfilter) = map.get_mut(key) {
+                                // since we got an EOSE our internal filter won't check for since/until anymore
+                                occfilter.filter.since = None;
+                                occfilter.filter.until = None;
+
+                                // and we dispatch this to the listener
+                                let _ = occfilter.ocurrences_sender.send(Occurrence::EOSE);
+                            }
+                        }
+                        Ok(Envelope::Ok {
+                            event_id,
+                            ok,
+                            reason,
+                        }) => match ok_callbacks.remove(&event_id) {
+                            Some((_, sender)) => {
+                                let _ = sender.send(match ok {
+                                    true => Ok(()),
+                                    false => Err(reason),
+                                });
+                            }
+                            None => {
+                                log::info!(
+                                    "received OK for unknown event {}: {} - {}",
+                                    event_id,
+                                    ok,
+                                    reason
+                                );
+                            }
+                        },
+                        Ok(Envelope::Notice(notice)) => {
+                            web_sys::console::log_1(
+                                &format!("[{}] received notice: {}", &relay_url, notice).into(),
+                            );
+                        }
+                        Ok(Envelope::Closed {
+                            subscription_id,
+                            reason,
+                        }) => {
+                            let key = key_from_sub_id(&subscription_id);
+                            let mut ssm = sub_sender_map.lock().await;
+                            if let Some(sub) = ssm.get_mut(key) {
+                                if reason.starts_with("auth-required:") {
+                                    if let Some(challenge) = relay_challenge.read().await.clone() {
+                                        if let Some(finalizer) = sub.auth_automatically.take() {
+                                            // instead of ending here after a CLOSED we will perform AUTH
+                                            let result = finalizer.finalize_event(EventTemplate {
+                                                created_at: Timestamp::now(),
+                                                kind: Kind(22242),
+                                                content: "".to_string(),
+                                                tags: Tags(vec![
+                                                    vec![
+                                                        "relay".to_string(),
+                                                        relay_url.to_string(),
+                                                    ],
+                                                    vec!["challenge".to_string(), challenge],
+                                                ]),
+                                            });
+                                            if let Ok(auth_event) = result.await {
+                                                // send the AUTH message and wait for an OK
+                                                let (tx, rx) = oneshot::channel();
+                                                ok_callbacks.insert(auth_event.id.clone(), tx);
+
+                                                let _ = relay_ws.send_with_str(
+                                                    &serde_json::to_string(&Envelope::AuthEvent {
+                                                        event: auth_event,
+                                                    })
+                                                    .unwrap(),
+                                                );
+
+                                                if let Ok(_) = rx.await {
+                                                    // then restart the subscription
+                                                    let _ = relay_ws.send_with_str(
+                                                        &serde_json::to_string(&Envelope::Req {
+                                                            subscription_id: subscription_id,
+                                                            filters: vec![sub.filter.clone()],
+                                                        })
+                                                        .unwrap(),
+                                                    );
+
+                                                    // and set this option to false this time to prevent an infinite
+                                                    // AUTH loop
+                                                    sub.auth_automatically = None;
+                                                    return;
+                                                }
+                                            };
+                                        }
+                                    }
+                                }
+                            }
+
+                            // now that we checked for that circumstance and didn't hit the `continue`
+                            // we can proceed to remove this subscription and issue the final `Close`
+                            if let Some(sub) = ssm.remove(key) {
+                                let _ = sub
+                                    .ocurrences_sender
+                                    .send(Occurrence::Close(CloseReason::ClosedByThemWithReason(
+                                        reason,
+                                    )))
+                                    .await;
+                            }
+                        }
+                        Ok(Envelope::AuthChallenge { challenge }) => {
+                            let _ = relay_challenge.write().await.insert(challenge);
+                        }
+                        Ok(envelope) => {
+                            log::info!("[{}] unexpected message: {}", &relay_url, envelope.label());
+                        }
+                        Err(err) => {
+                            log::info!("[{}] wrong message: {}", &relay_url, err,);
+                        }
+                    }
+                });
+            }
+        }) as Box<dyn FnMut(MessageEvent)>);
+        ws.set_onmessage(Some(on_message.into_js_value().unchecked_ref()));
+
+        // setup error handler
+        let on_error = Closure::once(Box::new(move |e: ErrorEvent| {
+            log::info!("websocket error: {:?}", e.message());
+        }) as Box<dyn FnOnce(ErrorEvent)>);
+        ws.set_onerror(Some(on_error.into_js_value().unchecked_ref()));
+
+        // setup close handler
+        let sub_sender_map_close = relay.sub_sender_map.clone();
+        let on_close_handler = Closure::once(Box::new(move |e: CloseEvent| {
+            log::info!("websocket closed: code={} reason={}", e.code(), e.reason());
+
+            // notify all subscriptions
+            let sub_sender_map_close = sub_sender_map_close.clone();
+            tokio::spawn(async move {
+                for (_, sub) in sub_sender_map_close.lock().await.drain() {
+                    let _ = sub.ocurrences_sender.send(Occurrence::Close(
+                        CloseReason::RelayConnectionClosedByThem(None),
+                    ));
+                }
+            });
+
+            if let Some(on_close) = on_close.take() {
+                let _ = on_close.send(format!("closed: {:?}", e.reason()));
+            }
+        }) as Box<dyn FnOnce(CloseEvent)>);
+        ws.set_onclose(Some(on_close_handler.into_js_value().unchecked_ref()));
+
+        // setup open handler for connection ready
+        let (sender, receiver) = oneshot::channel();
+        let mut opt = Some(sender);
+        let on_open = Closure::once(Box::new(move |_: JsValue| {
+            if let Some(sender) = opt.take() {
+                let _ = sender.send(());
+            }
+        }) as Box<dyn FnOnce(JsValue)>);
+        ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
+
+        match receiver.await {
+            Ok(()) => Ok(relay),
+            Err(_) => Err(ConnectError::Websocket),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn connect(
+        url: Url,
+        mut on_close: Option<oneshot::Sender<String>>,
+    ) -> Result<Self, ConnectError> {
+        use futures::{SinkExt, StreamExt};
+        use tokio::time::interval;
+        use tokio_tungstenite::{
+            connect_async_tls_with_config,
+            tungstenite::{client::IntoClientRequest, Message},
+        };
+
         let (write_sender, mut write_receiver) = mpsc::channel(1);
 
         // connect
@@ -58,10 +364,10 @@ impl Relay {
         .map_err(|_| ConnectError::Websocket)?;
 
         let (conn_write, mut conn_read) = ws_stream.split();
+        let writer = Arc::new(Mutex::new(conn_write));
 
         let relay = Self {
             url: url.clone(),
-            conn_write: Arc::new(Mutex::new(conn_write)),
             sub_sender_map: Arc::new(Mutex::new(SlotMap::with_capacity_and_key(8))),
             id_skippers_map: Arc::new(Mutex::new(SecondaryMap::with_capacity(8))),
             challenge: Arc::new(RwLock::new(None)),
@@ -70,7 +376,7 @@ impl Relay {
         };
 
         // start write queue handler
-        let queue_writer = relay.conn_write.clone();
+        let queue_writer = writer.clone();
         tokio::spawn(async move {
             while let Some(text) = write_receiver.recv().await {
                 let _ = queue_writer.lock().await.send(Message::text(text)).await;
@@ -78,7 +384,7 @@ impl Relay {
         });
 
         // start ping handler
-        let ping_writer = relay.conn_write.clone();
+        let ping_writer = writer.clone();
         tokio::spawn(async move {
             let mut ping_interval = interval(Duration::from_secs(29));
             loop {
@@ -96,7 +402,7 @@ impl Relay {
         });
 
         // start message reader
-        let pong_writer = relay.conn_write.clone();
+        let pong_writer = writer.clone();
         let id_skippers_map = relay.id_skippers_map.clone();
         let sub_sender_map = relay.sub_sender_map.clone();
         let relay_challenge = relay.challenge.clone();
@@ -122,18 +428,20 @@ impl Relay {
                             continue;
                         }
                         Ok(Message::Close(frame)) => {
+                            let close_msg = frame.clone().map_or("broken close".to_string(), |c| {
+                                format!("close ({}) {}", c.code, c.reason)
+                            });
+
                             if let Some(on_close) = on_close.take() {
-                                let _ = on_close.send(
-                                    frame.clone().map_or("broken close".to_string(), |c| {
-                                        format!("close ({}) {}", c.code, c.reason)
-                                    }),
-                                );
+                                let _ = on_close.send(close_msg.clone());
                             }
                             for (_, sub) in sub_sender_map.lock().await.drain() {
                                 let _ = sub
                                     .ocurrences_sender
                                     .send(Occurrence::Close(
-                                        CloseReason::RelayConnectionClosedByThem(frame.clone()),
+                                        CloseReason::RelayConnectionClosedByThem(Some(
+                                            close_msg.clone(),
+                                        )),
                                     ))
                                     .await;
                             }
@@ -369,17 +677,13 @@ impl Relay {
             let _ = write_queue.send(closemsg).await;
         });
 
-        let _ = self
-            .write_queue
-            .send(reqmsg)
-            .map_err(|err| {
-                format!(
-                    "[{}] failed to fire subscription: {}",
-                    self.url.as_str(),
-                    err
-                )
-            })
-            .await;
+        let _ = self.write_queue.send(reqmsg).await.map_err(|err| {
+            log::warn!(
+                "[{}] failed to fire subscription: {}",
+                self.url.as_str(),
+                err
+            )
+        });
 
         occurrences
     }
@@ -388,28 +692,38 @@ impl Relay {
 impl Drop for Relay {
     fn drop(&mut self) {
         let sub_sender_map = self.sub_sender_map.clone();
-        let conn_Write = self.conn_write.clone();
 
         tokio::spawn(async move {
-            for (_, sub) in self.sub_sender_map.lock().await.drain() {
+            for (_, sub) in sub_sender_map.lock().await.drain() {
                 let _ = sub
                     .ocurrences_sender
                     .send(Occurrence::Close(CloseReason::RelayConnectionClosedByUs))
                     .await;
             }
-
-            let _ = conn_write.lock().await.close().await;
         });
     }
 }
 
 impl std::fmt::Display for Relay {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.url)
+        write!(f, "<relay url={}>", self.url)
     }
 }
 
 #[cfg(test)]
+#[cfg(target_arch = "wasm32")]
+mod tests {
+    use wasm_bindgen_test::*;
+
+    #[wasm_bindgen_test]
+    async fn test_subscribe() {
+        // wasm tests would go here
+        // note: testing websockets in wasm requires a test server
+    }
+}
+
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
     use crate::{Filter, Kind};
