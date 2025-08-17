@@ -21,7 +21,7 @@ use web_sys::{CloseEvent, ErrorEvent, MessageEvent, WebSocket};
 pub struct Relay {
     pub url: Url,
     // by connection
-    ws: Arc<WebSocket>,
+    write_queue: mpsc::Sender<String>,
     challenge: Arc<RwLock<Option<String>>>,
 
     // by subscription
@@ -40,14 +40,26 @@ impl Relay {
         // create websocket
         log::info!("relay {}", url);
 
+        let (write_sender, mut write_receiver) = mpsc::channel(1);
+
         let relay = Self {
             url: url.clone(),
-            ws: Arc::new(WebSocket::new(url.as_str()).map_err(|_| ConnectError::Websocket)?),
+            write_queue: write_sender,
             sub_sender_map: Arc::new(Mutex::new(SlotMap::with_capacity_and_key(8))),
             id_skippers_map: Arc::new(Mutex::new(SecondaryMap::with_capacity(8))),
             challenge: Arc::new(RwLock::new(None)),
             ok_callbacks: Arc::new(DashMap::new()),
         };
+
+        let ws = Arc::new(WebSocket::new(url.as_str()).map_err(|_| ConnectError::Websocket)?);
+
+        // start write queue handler
+        let queue_writer = ws.clone();
+        tokio::spawn(async move {
+            while let Some(text) = write_receiver.recv().await {
+                let _ = queue_writer.send_with_str(&text);
+            }
+        });
 
         // setup message handler
         let id_skippers_map = relay.id_skippers_map.clone();
@@ -55,11 +67,9 @@ impl Relay {
         let relay_challenge = relay.challenge.clone();
         let ok_callbacks = relay.ok_callbacks.clone();
         let relay_url = relay.url.to_string();
-        let relay_ws = relay.ws.clone();
+        let relay_ws = ws.clone();
 
         let on_message = Closure::wrap(Box::new(move |e: MessageEvent| {
-            log::info!("onmessage {:?}", e);
-
             if let Ok(text) = e.data().dyn_into::<js_sys::JsString>() {
                 let message: String = text.into();
 
@@ -219,22 +229,18 @@ impl Relay {
                 });
             }
         }) as Box<dyn FnMut(MessageEvent)>);
-        relay
-            .ws
-            .set_onmessage(Some(on_message.as_ref().unchecked_ref()));
+        ws.set_onmessage(Some(on_message.into_js_value().unchecked_ref()));
 
         // setup error handler
-        let on_error = Closure::wrap(Box::new(move |e: ErrorEvent| {
-            log::info!("WebSocket error: {:?}", e.message());
-        }) as Box<dyn FnMut(ErrorEvent)>);
-        relay
-            .ws
-            .set_onerror(Some(on_error.as_ref().unchecked_ref()));
+        let on_error = Closure::once(Box::new(move |e: ErrorEvent| {
+            log::info!("websocket error: {:?}", e.message());
+        }) as Box<dyn FnOnce(ErrorEvent)>);
+        ws.set_onerror(Some(on_error.into_js_value().unchecked_ref()));
 
         // setup close handler
         let sub_sender_map_close = relay.sub_sender_map.clone();
-        let on_close_handler = Closure::wrap(Box::new(move |e: CloseEvent| {
-            log::info!("WebSocket closed: code={} reason={}", e.code(), e.reason());
+        let on_close_handler = Closure::once(Box::new(move |e: CloseEvent| {
+            log::info!("websocket closed: code={} reason={}", e.code(), e.reason());
 
             // notify all subscriptions
             let sub_sender_map_close = sub_sender_map_close.clone();
@@ -249,20 +255,18 @@ impl Relay {
             if let Some(on_close) = on_close.take() {
                 let _ = on_close.send(format!("closed: {:?}", e.reason()));
             }
-        }) as Box<dyn FnMut(CloseEvent)>);
-        relay
-            .ws
-            .set_onclose(Some(on_close_handler.as_ref().unchecked_ref()));
+        }) as Box<dyn FnOnce(CloseEvent)>);
+        ws.set_onclose(Some(on_close_handler.into_js_value().unchecked_ref()));
 
         // setup open handler for connection ready
         let (sender, receiver) = oneshot::channel();
         let mut opt = Some(sender);
-        let on_open = Closure::wrap(Box::new(move |_: JsValue| {
+        let on_open = Closure::once(Box::new(move |_: JsValue| {
             if let Some(sender) = opt.take() {
                 let _ = sender.send(());
             }
-        }) as Box<dyn FnMut(JsValue)>);
-        relay.ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
+        }) as Box<dyn FnOnce(JsValue)>);
+        ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
 
         match receiver.await {
             Ok(()) => Ok(relay),
@@ -276,8 +280,9 @@ impl Relay {
 
         let msg = serde_json::json!(["EVENT", event]);
 
-        self.ws
-            .send_with_str(&msg.to_string())
+        self.write_queue
+            .send(msg.to_string())
+            .await
             .map_err(|_| PublishError::Channel)?;
 
         rx.await
@@ -318,14 +323,14 @@ impl Relay {
             self.id_skippers_map.lock().await.insert(key, skip_ids);
         }
 
-        let closer_ws = self.ws.clone();
+        let write_queue = self.write_queue.clone();
         tokio::spawn(async move {
             // when the listener stops listening from this subscription we close it automatically
             occurrences_sender.closed().await;
-            let _ = closer_ws.send_with_str(&closemsg);
+            let _ = write_queue.send(closemsg).await;
         });
 
-        let _ = self.ws.send_with_str(&reqmsg);
+        let _ = self.write_queue.send(reqmsg).await;
 
         occurrences
     }
@@ -334,8 +339,6 @@ impl Relay {
 impl Drop for Relay {
     fn drop(&mut self) {
         let sub_sender_map = self.sub_sender_map.clone();
-        let relay_ws = self.ws.clone();
-
         tokio::spawn(async move {
             for (_, sub) in sub_sender_map.lock().await.drain() {
                 let _ = sub
@@ -343,8 +346,6 @@ impl Drop for Relay {
                     .send(Occurrence::Close(CloseReason::RelayConnectionClosedByUs))
                     .await;
             }
-
-            let _ = relay_ws.close();
         });
     }
 }
