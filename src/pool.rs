@@ -1,6 +1,6 @@
 use crate::{
     normalize_url,
-    relay::{self, Occurrence, Relay, SubscriptionOptions},
+    relay::{self, Relay, SubscriptionOptions},
     Event, Filter,
 };
 use dashmap::{DashMap, DashSet};
@@ -11,6 +11,7 @@ use std::sync::{
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 use tokio_with_wasm::alias as tokio;
+use url::Url;
 
 #[derive(Error, Debug)]
 pub enum EnsureError {
@@ -40,9 +41,11 @@ pub struct PublishResult {
     pub relay_url: String,
 }
 
-pub struct DirectedFilter {
-    pub filter: Filter,
-    pub relay: String,
+#[derive(Debug)]
+pub enum Occurrence {
+    Event(Event, Url),
+    EOSE,
+    Close,
 }
 
 impl Pool {
@@ -179,7 +182,7 @@ impl Pool {
         let mut occurrences = self.subscribe(urls, filter, subscription_options).await;
         while let Some(occ) = occurrences.recv().await {
             match occ {
-                Occurrence::Event(event) => {
+                Occurrence::Event(event, _) => {
                     events.push(event);
                 }
                 _ => {
@@ -222,13 +225,17 @@ impl Pool {
                     let mut sub = relay.subscribe(filter, opts).await;
                     while let Some(occ) = sub.recv().await {
                         match occ {
-                            Occurrence::Event(event) => {
-                                if tx.send(Occurrence::Event(event)).await.is_err() {
+                            relay::Occurrence::Event(event) => {
+                                if tx
+                                    .send(Occurrence::Event(event, relay.url.clone()))
+                                    .await
+                                    .is_err()
+                                {
                                     // receiver dropped
                                     return;
                                 }
                             }
-                            Occurrence::EOSE => {
+                            relay::Occurrence::EOSE => {
                                 if eose_counter.fetch_sub(1, Ordering::SeqCst) == 1 {
                                     if !eosed.swap(true, Ordering::SeqCst) {
                                         if tx.send(Occurrence::EOSE).await.is_err() {
@@ -238,7 +245,7 @@ impl Pool {
                                     }
                                 }
                             }
-                            Occurrence::Close(_) => break,
+                            relay::Occurrence::Close(_) => break,
                         }
                     }
                 }
@@ -254,11 +261,7 @@ impl Pool {
                 }
 
                 if closed_counter.fetch_sub(1, Ordering::SeqCst) == 1 {
-                    if tx
-                        .send(Occurrence::Close(crate::relay::CloseReason::Unknown))
-                        .await
-                        .is_err()
-                    {
+                    if tx.send(Occurrence::Close).await.is_err() {
                         // receiver dropped
                         return;
                     }
