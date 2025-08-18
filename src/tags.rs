@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::fmt;
+use std::{fmt, slice::Iter};
 
 /// a single tag (array of strings)
 pub type Tag = Vec<String>;
@@ -84,6 +84,19 @@ impl Tags {
             }
         }
         false
+    }
+
+    pub fn iter(&self) -> Iter<'_, Tag> {
+        self.0.iter()
+    }
+}
+
+impl IntoIterator for Tags {
+    type Item = Tag;
+    type IntoIter = std::vec::IntoIter<Tag>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
     }
 }
 
