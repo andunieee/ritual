@@ -17,6 +17,15 @@ pub struct Metadata {
     pub banner: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lud16: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nip05: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub picture: Option<String>,
 
     #[serde(skip_serializing)]
