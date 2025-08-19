@@ -347,7 +347,7 @@ impl BunkerClient {
         // publish
         let mut sent = false;
         for url in self.relays.iter() {
-            if let Some(relay) = self.pool.get_relay(url) {
+            if let Some(relay) = self.pool.get_relay(url).await {
                 if relay.publish(event.clone()).await.is_ok() {
                     sent = true;
                 }

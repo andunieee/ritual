@@ -4,12 +4,15 @@ use crate::{
     Event, Filter,
 };
 use dashmap::{DashMap, DashSet};
-use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
-    Arc,
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+    },
 };
 use thiserror::Error;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_with_wasm::alias as tokio;
 use url::Url;
 
@@ -27,7 +30,7 @@ pub enum EnsureError {
 
 #[derive(Debug)]
 pub struct Pool {
-    relays: Arc<DashMap<String, Relay>>,
+    relays: Arc<Mutex<HashMap<String, Relay>>>,
     penalty_box: Option<Arc<DashMap<String, (u16, u32)>>>, // (failures, remaining_seconds)
 }
 
@@ -57,15 +60,17 @@ impl Pool {
         };
 
         Self {
-            relays: Arc::new(DashMap::new()),
+            relays: Arc::new(Mutex::new(HashMap::new())),
             penalty_box,
         }
     }
 
     /// get an existing relay connection if it exists, do not try to open a new one
-    pub fn get_relay(&self, url: &str) -> Option<Relay> {
+    pub async fn get_relay(&self, url: &str) -> Option<Relay> {
         let normalized_url = normalize_url(url).ok()?;
         self.relays
+            .lock()
+            .await
             .get(normalized_url.as_str())
             .map(|relay| relay.clone())
     }
@@ -75,7 +80,8 @@ impl Pool {
         let normalized_url = normalize_url(url)?;
 
         // check if relay already exists
-        if let Some(relay) = self.relays.get(normalized_url.as_str()) {
+        let mut relay_map = self.relays.lock().await;
+        if let Some(relay) = relay_map.get(normalized_url.as_str()) {
             return Ok(relay.clone());
         }
 
@@ -92,14 +98,14 @@ impl Pool {
         // create new relay connection
         let (on_close, handle_close) = oneshot::channel::<String>();
         let nm_ = normalized_url.clone();
-        let relays_map = self.relays.clone();
+        let relay_map_on_close = self.relays.clone();
         tokio::spawn(async move {
             match handle_close.await {
                 Ok(reason) => {
                     log::info!("[{}] relay connection closed: {}", nm_.as_str(), reason);
 
                     // the relay connection will be dropped from the map if it disconnects
-                    relays_map.remove(nm_.as_str());
+                    relay_map_on_close.lock().await.remove(nm_.as_str());
                 }
                 Err(err) => {
                     log::info!(
@@ -113,8 +119,7 @@ impl Pool {
 
         match Relay::connect(normalized_url.to_owned(), Some(on_close)).await {
             Ok(relay) => {
-                self.relays
-                    .insert(normalized_url.to_string(), relay.clone());
+                relay_map.insert(normalized_url.to_string(), relay.clone());
                 Ok(relay)
             }
             Err(err) => {
