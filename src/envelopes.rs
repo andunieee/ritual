@@ -542,10 +542,9 @@ mod tests {
                 assert_eq!(filters[0].limit, Some(10));
                 assert_eq!(
                     filters[1].authors,
-                    Some(vec![PubKey::from_hex(
-                        "37a4aef1f8423ca076e4b7d99a8cabff40ddb8231f2a9f01081f15d7fa65c1ba"
-                    )
-                    .unwrap()])
+                    Some(vec!["37a4aef1f8423ca076e4b7d99a8cabff40ddb8231f2a9f01081f15d7fa65c1ba"
+                        .parse()
+                        .unwrap()])
                 );
             }
             _ => panic!("expected Req envelope"),

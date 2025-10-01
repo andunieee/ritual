@@ -374,8 +374,9 @@ mod tests {
 
     #[test]
     fn test_encode_decode_npub() {
-        let pk =
-            PubKey::from_hex("d91191e30e00444b942c0e82cad470b32af171764c2275bee0bd99377efd4075")
+        let pk: PubKey =
+            "d91191e30e00444b942c0e82cad470b32af171764c2275bee0bd99377efd4075"
+                .parse()
                 .unwrap();
         let npub = pk.to_npub();
         assert_eq!(
@@ -394,7 +395,7 @@ mod tests {
     #[test]
     fn test_encode_decode_nsec() {
         let sk_hex = "fe20f3381b9404e9a35afb49b3dc070a4dc1ffd321ab8f3eae979ab96f601e3a";
-        let sk = SecretKey::from_hex(sk_hex).unwrap();
+        let sk: SecretKey = sk_hex.parse().unwrap();
         let nsec = &sk.to_nsec();
         assert_eq!(
             nsec,
@@ -411,8 +412,9 @@ mod tests {
 
     #[test]
     fn test_encode_decode_nprofile() {
-        let pk =
-            PubKey::from_hex("d91191e30e00444b942c0e82cad470b32af171764c2275bee0bd99377efd4075")
+        let pk: PubKey =
+            "d91191e30e00444b942c0e82cad470b32af171764c2275bee0bd99377efd4075"
+                .parse()
                 .unwrap();
         let relays = vec![
             "wss://relay.primal.net".to_string(),

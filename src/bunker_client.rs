@@ -212,7 +212,7 @@ impl BunkerClient {
         let host = url
             .host_str()
             .ok_or(ConnectError::URI(url::ParseError::EmptyHost))?;
-        let pk = PubKey::from_hex(host)?;
+        let pk: PubKey = host.parse()?;
         let relays = url
             .query_pairs()
             .filter(|(k, _)| k == "relay")
@@ -248,7 +248,7 @@ impl BunkerClient {
         }
 
         let resp = self.rpc("get_public_key", vec![]).await?;
-        let pk = PubKey::from_hex(&resp)?;
+        let pk: PubKey = resp.parse()?;
 
         {
             let mut guard = self.get_pubkey_response.lock().await;

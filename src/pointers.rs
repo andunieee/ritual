@@ -33,7 +33,7 @@ impl ProfilePointer {
             return Err(Error::ShortTag);
         }
 
-        let pubkey = PubKey::from_hex(&tag[1]).map_err(|_| Error::Invalid)?;
+        let pubkey: PubKey = tag[1].parse().map_err(|_| Error::Invalid)?;
         let relays = if tag.len() > 2 && is_valid_relay_url(&tag[2]) {
             vec![tag[2].clone()]
         } else {
@@ -68,7 +68,7 @@ impl EventPointer {
         };
 
         let author = if tag.len() > 3 {
-            PubKey::from_hex(&tag[3]).ok()
+            tag[3].parse().ok()
         } else {
             None
         };
@@ -105,7 +105,7 @@ impl AddressPointer {
 
         let kind: u16 = parts[0].parse().map_err(|_| Error::Invalid)?;
 
-        let pubkey = PubKey::from_hex(parts[1]).map_err(|_| Error::Invalid)?;
+        let pubkey: PubKey = parts[1].parse().map_err(|_| Error::Invalid)?;
         let identifier = parts[2].to_string();
 
         let relays = if tag.len() > 2 && is_valid_relay_url(&tag[2]) {

@@ -235,7 +235,7 @@ mod tests {
         ];
 
         for (password, secret_hex, logn, ksb) in test_cases {
-            let sk = SecretKey::from_hex(secret_hex).unwrap();
+            let sk = secret_hex.parse().unwrap();
             let bech32_code = encrypt(&sk, password, logn, ksb).unwrap();
 
             assert!(bech32_code.starts_with("ncryptsec1"));

@@ -94,11 +94,7 @@ pub fn extract_event_pubkey(json_str: &str) -> Option<PubKey> {
     let quote_start = remaining.find('"')?;
     let pk_str = &remaining[quote_start + 1..quote_start + 1 + 64];
 
-    if pk_str.len() == 64 {
-        PubKey::from_hex(pk_str).ok()
-    } else {
-        None
-    }
+    pk_str.parse().ok()
 }
 
 /// extract d tag from JSON string

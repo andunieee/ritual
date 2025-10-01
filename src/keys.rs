@@ -19,8 +19,14 @@ pub enum SecretKeyError {
     #[error("invalid secret key")]
     InvalidSecretKey,
 
+    #[error("unknown secret key format")]
+    UnknownFormat,
+
     #[error("public key error: {0}")]
-    PubKey(#[from] PubKeyError),
+    PubKeyError(#[from] PubKeyError),
+
+    #[error("invalid bech32 encoding")]
+    InvalidBech32,
 }
 
 #[derive(Error, Debug)]
@@ -31,8 +37,14 @@ pub enum PubKeyError {
     #[error("invalid public key length: expected 32 bytes, got {0}")]
     InvalidLength(usize),
 
+    #[error("unknown public key format")]
+    UnknownFormat,
+
     #[error("public key not in curve")]
     NotInCurve,
+
+    #[error("invalid bech32 encoding")]
+    InvalidBech32,
 }
 
 /// A 32-byte secret key
@@ -61,26 +73,6 @@ impl SecretKey {
         &self.0
     }
 
-    /// create secret key from hex string
-    pub fn from_hex(hex_str: &str) -> Result<Self, SecretKeyError> {
-        let hex_str = if hex_str.len() < 64 {
-            format!("{:0>64}", hex_str)
-        } else if hex_str.len() > 64 {
-            return Err(SecretKeyError::InvalidLength(hex_str.to_string()));
-        } else {
-            hex_str.to_string()
-        };
-
-        let mut bytes = [0u8; 32];
-        lowercase_hex::decode_to_slice(&hex_str, &mut bytes)?;
-
-        // ensure it is in the curve
-        let _ = secp256k1::SecretKey::from_byte_array(bytes)
-            .map_err(|_| SecretKeyError::InvalidSecretKey)?;
-
-        Ok(Self(bytes))
-    }
-
     /// convert to hex string
     pub fn to_hex(&self) -> String {
         lowercase_hex::encode(self.0)
@@ -102,6 +94,30 @@ impl SecretKey {
     pub fn to_ecdsa_key(&self) -> secp256k1::SecretKey {
         secp256k1::SecretKey::from_byte_array(self.0)
             .expect("should always work as secret keys are pre-validated")
+    }
+}
+
+impl FromStr for SecretKey {
+    type Err = SecretKeyError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.starts_with("nsec1") {
+            match crate::codes::decode(s).map_err(|_| SecretKeyError::InvalidBech32)? {
+                crate::codes::DecodeResult::SecretKey(sk) => Ok(sk),
+                _ => Err(SecretKeyError::InvalidSecretKey),
+            }
+        } else if s.len() == 64 {
+            let mut bytes = [0u8; 32];
+            lowercase_hex::decode_to_slice(&s, &mut bytes)?;
+
+            // ensure it is in the curve
+            let _ = secp256k1::SecretKey::from_byte_array(bytes)
+                .map_err(|_| SecretKeyError::InvalidSecretKey)?;
+
+            Ok(Self(bytes))
+        } else {
+            Err(SecretKeyError::UnknownFormat)
+        }
     }
 }
 
@@ -131,20 +147,6 @@ impl PubKey {
 
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
-    }
-
-    pub fn from_hex(hex_str: &str) -> Result<Self, PubKeyError> {
-        if hex_str.len() != 64 {
-            return Err(PubKeyError::InvalidLength(hex_str.len() / 2));
-        }
-        let mut bytes = [0u8; 32];
-        lowercase_hex::decode_to_slice(hex_str, &mut bytes)?;
-
-        // ensure the public key is valid
-        let _ = secp256k1::XOnlyPublicKey::from_byte_array(bytes)
-            .map_err(|_| PubKeyError::NotInCurve)?;
-
-        Ok(Self(bytes))
     }
 
     pub fn as_u64_lossy(&self) -> u64 {
@@ -191,7 +193,7 @@ impl<'de> Deserialize<'de> for PubKey {
         D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        PubKey::from_hex(&s).map_err(Error::custom)
+        s.parse().map_err(Error::custom)
     }
 }
 
@@ -211,6 +213,23 @@ impl FromStr for PubKey {
     type Err = PubKeyError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::from_hex(s)
+        if s.starts_with("npub1") || s.starts_with("nprofile1") {
+            match crate::codes::decode(s).map_err(|_| PubKeyError::InvalidBech32)? {
+                crate::codes::DecodeResult::PubKey(pk) => Ok(pk),
+                crate::codes::DecodeResult::Profile(profile) => Ok(profile.pubkey),
+                _ => Err(PubKeyError::NotInCurve),
+            }
+        } else if s.len() == 64 {
+            let mut bytes = [0u8; 32];
+            lowercase_hex::decode_to_slice(s, &mut bytes)?;
+
+            // ensure the public key is valid
+            let _ = secp256k1::XOnlyPublicKey::from_byte_array(bytes)
+                .map_err(|_| PubKeyError::NotInCurve)?;
+
+            Ok(Self(bytes))
+        } else {
+            Err(PubKeyError::UnknownFormat)
+        }
     }
 }

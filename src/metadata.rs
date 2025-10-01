@@ -77,7 +77,7 @@ mod tests {
         // create a mock event for testing
         let event = Event {
             id: crate::ID::from_hex("7ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f9").unwrap(),
-            pubkey: crate::PubKey::from_hex("7ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f9").unwrap(),
+            pubkey: "7ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f9".parse().unwrap(),
             created_at: Timestamp::now(),
             kind: Kind(0),
             tags: Tags::default(),
@@ -110,7 +110,7 @@ mod tests {
         // verify we can deserialize back
         let event = Event {
             id: crate::ID::from_hex("7ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f9").unwrap(),
-            pubkey: crate::PubKey::from_hex("7ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f9").unwrap(),
+            pubkey: "7ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f9".parse().unwrap(),
             created_at: Timestamp::now(),
             kind: Kind(0),
             tags: Tags::default(),
@@ -134,7 +134,7 @@ mod tests {
         // should deserialize back to empty metadata
         let event = Event {
             id: crate::ID::from_hex("7ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f9").unwrap(),
-            pubkey: crate::PubKey::from_hex("7ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f9").unwrap(),
+            pubkey: "7ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f9".parse().unwrap(),
             created_at: Timestamp::now(),
             kind: Kind(0),
             tags: Tags::default(),
@@ -151,7 +151,7 @@ mod tests {
     fn test_invalid_json() {
         let event = Event {
             id: crate::ID::from_hex("7ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f9").unwrap(),
-            pubkey: crate::PubKey::from_hex("7ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f9").unwrap(),
+            pubkey: "7ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f9".parse().unwrap(),
             created_at: Timestamp::now(),
             kind: Kind(0),
             tags: Tags::default(),

@@ -218,7 +218,7 @@ mod tests {
         plaintext: &str,
         expected: &str,
     ) {
-        let pub2 = SecretKey::from_hex(sk2_hex).unwrap().pubkey();
+        let pub2 = sk2_hex.parse::<SecretKey>().unwrap().pubkey();
         let mut conversation_key: [u8; 32] = Default::default();
         lowercase_hex::decode_to_slice(conversation_key_hex, &mut conversation_key[0..32]).unwrap();
         let mut salt: [u8; 32] = Default::default();
@@ -254,8 +254,8 @@ mod tests {
         lowercase_hex::decode_to_slice(conversation_key_hex, &mut expected_conversation_key[0..32])
             .unwrap();
 
-        let sk = SecretKey::from_hex(sec_hex).unwrap();
-        let pk = PubKey::from_hex(pub_hex).unwrap();
+        let sk: SecretKey = sec_hex.parse().unwrap();
+        let pk: PubKey = pub_hex.parse().unwrap();
         let actual_conversation_key = generate_conversation_key(&pk, &sk);
 
         assert_eq!(

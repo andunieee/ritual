@@ -74,7 +74,7 @@ pub async fn query_identifier(fullname: &str) -> Result<ProfilePointer> {
         .get(&name)
         .ok_or_else(|| AddressError::NoEntry(name.clone()))?;
 
-    let pubkey = PubKey::from_hex(pubkey_hex)
+    let pubkey: PubKey = pubkey_hex.parse()
         .map_err(|_| AddressError::InvalidPublicKey(pubkey_hex.clone()))?;
 
     let relays = if let Some(relays_map) = &result.relays {
@@ -189,10 +189,9 @@ mod tests {
         assert_eq!(
             query_identifier("mike@mikedilger.com").await.unwrap(),
             ProfilePointer {
-                pubkey: PubKey::from_hex(
-                    "ee11a5dff40c19a555f41fe42b48f00e618c91225622ae37b6c2bb67b76c4e49"
-                )
-                .unwrap(),
+                pubkey: "ee11a5dff40c19a555f41fe42b48f00e618c91225622ae37b6c2bb67b76c4e49"
+                    .parse()
+                    .unwrap(),
                 relays: vec![
                     "wss://chorus.mikedilger.com:444/".to_string(),
                     "wss://nostr.einundzwanzig.space/".to_string(),
@@ -204,10 +203,9 @@ mod tests {
         assert_eq!(
             query_identifier("nvk.org").await.unwrap(),
             ProfilePointer {
-                pubkey: PubKey::from_hex(
-                    "e88a691e98d9987c964521dff60025f60700378a4879180dcbbb4a5027850411"
-                )
-                .unwrap(),
+                pubkey: "e88a691e98d9987c964521dff60025f60700378a4879180dcbbb4a5027850411"
+                    .parse()
+                    .unwrap(),
                 relays: vec![]
             },
         );
