@@ -1,7 +1,4 @@
-use slotmap::{new_key_type, Key, KeyData};
-use url::Url;
-
-use crate::{PubKey, Timestamp, ID};
+use slotmap::Key;
 
 /// escape a string for JSON encoding
 pub fn escape_string(s: &str) -> String {
@@ -29,7 +26,7 @@ pub fn escape_string(s: &str) -> String {
 }
 
 // extract subscription ID from JSON string
-new_key_type! { pub struct SubscriptionKey; }
+slotmap::new_key_type! { pub struct SubscriptionKey; }
 
 pub fn sub_id_from_key(key: &SubscriptionKey, label: &Option<String>) -> String {
     let key_data = key.data().as_ffi();
@@ -70,24 +67,24 @@ pub fn key_from_sub_id(sub_id: &str) -> SubscriptionKey {
             .try_into()
             .unwrap(),
     );
-    let key = KeyData::from_ffi(key_data);
+    let key = slotmap::KeyData::from_ffi(key_data);
 
     SubscriptionKey(key)
 }
 
 /// extract event ID from JSON string
-pub fn extract_event_id(json_str: &str) -> Option<ID> {
+pub fn extract_event_id(json_str: &str) -> Option<crate::ID> {
     let start = json_str.find("\"id\"")?;
     let remaining = &json_str[start + 4..];
 
     let quote_start = remaining.find('"')?;
     let id_str = &remaining[quote_start + 1..quote_start + 1 + 64];
 
-    ID::from_hex(id_str).ok()
+    crate::ID::from_hex(id_str).ok()
 }
 
 /// extract event public key from JSON string
-pub fn extract_event_pubkey(json_str: &str) -> Option<PubKey> {
+pub fn extract_event_pubkey(json_str: &str) -> Option<crate::PubKey> {
     let start = json_str.find("\"pubkey\"")?;
     let remaining = &json_str[start + 8..];
 
@@ -111,7 +108,7 @@ pub fn extract_d_tag(json_str: &str) -> Option<String> {
 }
 
 /// extract timestamp from JSON string
-pub fn extract_timestamp(json_str: &str) -> Option<Timestamp> {
+pub fn extract_timestamp(json_str: &str) -> Option<crate::Timestamp> {
     let start = json_str.find("\"created_at\"")?;
     let remaining = &json_str[start + 12..];
 
@@ -137,12 +134,12 @@ pub fn extract_timestamp(json_str: &str) -> Option<Timestamp> {
     }
 
     let num_str = &remaining[..num_end];
-    num_str.parse::<i64>().ok().map(Timestamp::from)
+    num_str.parse::<i64>().ok().map(crate::Timestamp::from)
 }
 
 /// check if a URL is a valid relay URL (ws:// or wss://)
 pub fn is_valid_relay_url(url_str: &str) -> bool {
-    match Url::parse(url_str) {
+    match url::Url::parse(url_str) {
         Ok(url) => matches!(url.scheme(), "ws" | "wss"),
         Err(_) => false,
     }
@@ -152,7 +149,6 @@ extern crate test;
 
 #[cfg(test)]
 mod tests {
-    use crate::Event;
 
     use super::*;
     use test::Bencher;
@@ -162,12 +158,12 @@ mod tests {
         let key_data_u64 = // do this roundabount thing here in the test thing to ensure consistency
             // (if we just pass '38' it will be changed in the way in because whatever,
             // the "from_ffi" function only cares about keys it has produced itself)
-            SubscriptionKey(KeyData::from_ffi(38u64)).data().as_ffi();
+            SubscriptionKey(slotmap::KeyData::from_ffi(38u64)).data().as_ffi();
         let as_hex = lowercase_hex::encode(key_data_u64.to_le_bytes());
         let expected_hex = "2600000001000000";
         assert_eq!(expected_hex, as_hex);
 
-        let subkey = SubscriptionKey(KeyData::from_ffi(key_data_u64));
+        let subkey = SubscriptionKey(slotmap::KeyData::from_ffi(key_data_u64));
         let label = "x34654o9x09jcoznajnawkbr-034ukjs";
         let expected_id = format!("{}:{}", expected_hex, label);
         assert_eq!(
@@ -194,7 +190,8 @@ mod tests {
     #[test]
     fn test_extract_event_id() {
         let id =
-            ID::from_hex("9429b2e11640bfd86971f0d9f7435199b57e121a363213df11d5b426807e49f5").ok();
+            crate::ID::from_hex("9429b2e11640bfd86971f0d9f7435199b57e121a363213df11d5b426807e49f5")
+                .ok();
 
         assert_eq!(
             extract_event_id(
@@ -205,7 +202,7 @@ mod tests {
 
         assert_eq!(
             id,
-            Some(ID([
+            Some(crate::ID([
                 0x94, 0x29, 0xb2, 0xe1, 0x16, 0x40, 0xbf, 0xd8, 0x69, 0x71, 0xf0, 0xd9, 0xf7, 0x43,
                 0x51, 0x99, 0xb5, 0x7e, 0x12, 0x1a, 0x36, 0x32, 0x13, 0xdf, 0x11, 0xd5, 0xb4, 0x26,
                 0x80, 0x7e, 0x49, 0xf5,
@@ -217,7 +214,9 @@ mod tests {
     fn bench_get_id_serde(b: &mut Bencher) {
         let eventj = r#"{"kind":1,"pubkey":"37a4aef1f8423ca076e4b7d99a8cabff40ddb8231f2a9f01081f15d7fa65c1ba","created_at":1750711742,"tags":[],"content":"hello world","sig":"a1ecbf1636f5e752f1b918a86b065a8031b1387f0785f0ca19b84cc155d7937fece1f3ae53b79d347fbce5555a0f2da8db96334cab154f8d92300f8c1936710c","id":"9429b2e11640bfd86971f0d9f7435199b57e121a363213df11d5b426807e49f5"}"#;
         b.iter(|| {
-            let id = serde_json::from_str::<Event>(eventj).map(|evt| evt.id).ok();
+            let id = serde_json::from_str::<crate::Event>(eventj)
+                .map(|evt| evt.id)
+                .ok();
             id
         });
     }

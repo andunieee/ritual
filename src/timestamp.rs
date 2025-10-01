@@ -1,7 +1,3 @@
-use serde::{Deserialize, Serialize};
-use std::fmt;
-use std::time::{SystemTime, UNIX_EPOCH};
-
 /// unix timestamp in seconds
 #[derive(
     Debug,
@@ -12,8 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
     PartialOrd,
     Ord,
     Hash,
-    Serialize,
-    Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
     rkyv::Archive,
     rkyv::Deserialize,
     rkyv::Serialize,
@@ -23,16 +19,16 @@ pub struct Timestamp(pub u32);
 impl Timestamp {
     pub fn now() -> Self {
         Self(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs() as u32,
         )
     }
 }
 
-impl fmt::Display for Timestamp {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for Timestamp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
@@ -92,8 +88,8 @@ impl From<usize> for Timestamp {
     }
 }
 
-impl From<SystemTime> for Timestamp {
-    fn from(value: SystemTime) -> Self {
+impl From<std::time::SystemTime> for Timestamp {
+    fn from(value: std::time::SystemTime) -> Self {
         let duration = value
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default();
@@ -101,8 +97,8 @@ impl From<SystemTime> for Timestamp {
     }
 }
 
-impl From<Timestamp> for SystemTime {
+impl From<Timestamp> for std::time::SystemTime {
     fn from(timestamp: Timestamp) -> Self {
-        UNIX_EPOCH + std::time::Duration::from_secs(timestamp.0 as u64)
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(timestamp.0 as u64)
     }
 }

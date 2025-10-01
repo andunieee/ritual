@@ -1,6 +1,3 @@
-use serde::{Deserialize, Serialize};
-use std::{fmt, slice::Iter};
-
 /// a single tag (array of strings)
 pub type Tag = Vec<String>;
 
@@ -11,8 +8,8 @@ pub type Tag = Vec<String>;
     Clone,
     PartialEq,
     Eq,
-    Serialize,
-    Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
     rkyv::Archive,
     rkyv::Deserialize,
     rkyv::Serialize,
@@ -86,7 +83,7 @@ impl Tags {
         false
     }
 
-    pub fn iter(&self) -> Iter<'_, Tag> {
+    pub fn iter(&self) -> std::slice::Iter<'_, Tag> {
         self.0.iter()
     }
 }
@@ -100,8 +97,8 @@ impl IntoIterator for Tags {
     }
 }
 
-impl fmt::Display for Tags {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for Tags {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match serde_json::to_string(self) {
             Ok(json) => write!(f, "{json}"),
             Err(err) => write!(f, "Tags({err})"),

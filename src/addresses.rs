@@ -1,11 +1,4 @@
-use crate::{keys, ProfilePointer, PubKey};
-use regex::Regex;
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use thiserror::Error;
-
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, std::fmt::Debug)]
 pub enum AddressError {
     #[error("invalid identifier")]
     InvalidIdentifier,
@@ -23,21 +16,21 @@ pub enum AddressError {
     Http(#[from] reqwest::Error),
 
     #[error("public key parsing error")]
-    PubKeyParsing(#[from] keys::PubKeyError),
+    PubKeyParsing(#[from] crate::keys::PubKeyError),
 }
 
 pub type Result<T> = std::result::Result<T, AddressError>;
 
 /// well-known response structure
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(std::fmt::Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WellKnownResponse {
-    pub names: HashMap<String, String>,
+    pub names: std::collections::HashMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub relays: Option<HashMap<String, Vec<String>>>,
+    pub relays: Option<std::collections::HashMap<String, Vec<String>>>,
 }
 
 lazy_static::lazy_static! {
-    static ref REGEX: Regex = Regex::new(r"^(?:([\w.+-]+)@)?([\w_-]+(\.[\w_-]+)+)$").unwrap();
+    static ref REGEX: regex::Regex = regex::Regex::new(r"^(?:([\w.+-]+)@)?([\w_-]+(\.[\w_-]+)+)$").unwrap();
 }
 
 /// check if an identifier is valid according to address format
@@ -66,7 +59,7 @@ pub fn parse_identifier(fullname: &str) -> Result<(String, String)> {
 }
 
 /// query a identifier and return the profile pointer
-pub async fn query_identifier(fullname: &str) -> Result<ProfilePointer> {
+pub async fn query_identifier(fullname: &str) -> Result<crate::ProfilePointer> {
     let (result, name) = fetch(fullname).await?;
 
     let pubkey_hex = result
@@ -74,7 +67,8 @@ pub async fn query_identifier(fullname: &str) -> Result<ProfilePointer> {
         .get(&name)
         .ok_or_else(|| AddressError::NoEntry(name.clone()))?;
 
-    let pubkey: PubKey = pubkey_hex.parse()
+    let pubkey: crate::PubKey = pubkey_hex
+        .parse()
         .map_err(|_| AddressError::InvalidPublicKey(pubkey_hex.clone()))?;
 
     let relays = if let Some(relays_map) = &result.relays {
@@ -83,14 +77,14 @@ pub async fn query_identifier(fullname: &str) -> Result<ProfilePointer> {
         Vec::new()
     };
 
-    Ok(ProfilePointer { pubkey, relays })
+    Ok(crate::ProfilePointer { pubkey, relays })
 }
 
 /// fetch the well-known response for a identifier
 pub async fn fetch(fullname: &str) -> Result<(WellKnownResponse, String)> {
     let (name, domain) = parse_identifier(fullname)?;
 
-    let client = Client::builder()
+    let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
 
@@ -188,7 +182,7 @@ mod tests {
     async fn test_fetch_name() {
         assert_eq!(
             query_identifier("mike@mikedilger.com").await.unwrap(),
-            ProfilePointer {
+            crate::ProfilePointer {
                 pubkey: "ee11a5dff40c19a555f41fe42b48f00e618c91225622ae37b6c2bb67b76c4e49"
                     .parse()
                     .unwrap(),
@@ -202,7 +196,7 @@ mod tests {
 
         assert_eq!(
             query_identifier("nvk.org").await.unwrap(),
-            ProfilePointer {
+            crate::ProfilePointer {
                 pubkey: "e88a691e98d9987c964521dff60025f60700378a4879180dcbbb4a5027850411"
                     .parse()
                     .unwrap(),

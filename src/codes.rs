@@ -1,8 +1,4 @@
-use crate::{keys, pointers::*, Kind, PubKey, SecretKey, ID};
-use bech32::{Bech32, Hrp};
-use thiserror::Error;
-
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum DecodeError {
     #[error("bech32 decoding error")]
     Bech32(#[from] bech32::DecodeError),
@@ -11,19 +7,19 @@ pub enum DecodeError {
     InvalidLength { expected: usize, actual: usize },
 
     #[error("pubkey is invalid")]
-    InvalidPubKey(#[from] keys::PubKeyError),
+    InvalidPubKey(#[from] crate::keys::PubKeyError),
 
     #[error("secret key is invalid")]
-    InvalidSecretKey(#[from] keys::SecretKeyError),
+    InvalidSecretKey(#[from] crate::keys::SecretKeyError),
 
     #[error("incomplete code {0}")]
-    Incomplete(Hrp),
+    Incomplete(bech32::Hrp),
 
     #[error("unknown prefix {0}")]
-    UnknownPrefix(Hrp),
+    UnknownPrefix(bech32::Hrp),
 
     #[error("malformed code {0}: {0}")]
-    Malformed(Hrp, String),
+    Malformed(bech32::Hrp, String),
 
     #[error("although valid, this code cannot be converted to a pointer")]
     NotAPointer,
@@ -36,11 +32,11 @@ const TLV_KIND: u8 = 3;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DecodeResult {
-    SecretKey(SecretKey),
-    PubKey(PubKey),
-    Profile(ProfilePointer),
-    Event(EventPointer),
-    Address(AddressPointer),
+    SecretKey(crate::SecretKey),
+    PubKey(crate::PubKey),
+    Profile(crate::ProfilePointer),
+    Event(crate::EventPointer),
+    Address(crate::AddressPointer),
 }
 
 pub fn decode(bech32_string: &str) -> Result<DecodeResult, DecodeError> {
@@ -56,7 +52,9 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult, DecodeError> {
             }
             let mut bytes = [0u8; 32];
             bytes.copy_from_slice(&data);
-            Ok(DecodeResult::SecretKey(SecretKey::from_bytes(bytes)?))
+            Ok(DecodeResult::SecretKey(crate::SecretKey::from_bytes(
+                bytes,
+            )?))
         }
         "note" => {
             if data.len() != 32 {
@@ -67,8 +65,8 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult, DecodeError> {
             }
             let mut bytes = [0u8; 32];
             bytes.copy_from_slice(&data);
-            Ok(DecodeResult::Event(EventPointer {
-                id: ID::from_bytes(bytes),
+            Ok(DecodeResult::Event(crate::EventPointer {
+                id: crate::ID::from_bytes(bytes),
                 relays: Vec::new(),
                 author: None,
                 kind: None,
@@ -83,7 +81,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult, DecodeError> {
             }
             let mut bytes = [0u8; 32];
             bytes.copy_from_slice(&data);
-            Ok(DecodeResult::PubKey(PubKey::from_bytes(bytes)?))
+            Ok(DecodeResult::PubKey(crate::PubKey::from_bytes(bytes)?))
         }
         "nprofile" => {
             let mut curr = 0;
@@ -108,7 +106,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult, DecodeError> {
                         }
                         let mut bytes = [0u8; 32];
                         bytes.copy_from_slice(&value);
-                        pubkey = Some(PubKey::from_bytes(bytes)?);
+                        pubkey = Some(crate::PubKey::from_bytes(bytes)?);
                     }
                     TLV_RELAY => {
                         relays.push(String::from_utf8(value).map_err(|err| {
@@ -122,7 +120,10 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult, DecodeError> {
             }
 
             match pubkey {
-                Some(pubkey) => Ok(DecodeResult::Profile(ProfilePointer { pubkey, relays })),
+                Some(pubkey) => Ok(DecodeResult::Profile(crate::ProfilePointer {
+                    pubkey,
+                    relays,
+                })),
                 None => Err(DecodeError::Incomplete(prefix)),
             }
         }
@@ -150,7 +151,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult, DecodeError> {
                         }
                         let mut bytes = [0u8; 32];
                         bytes.copy_from_slice(&value);
-                        id = Some(ID::from_bytes(bytes));
+                        id = Some(crate::ID::from_bytes(bytes));
                     }
                     TLV_RELAY => {
                         relays.push(String::from_utf8(value).map_err(|err| {
@@ -166,7 +167,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult, DecodeError> {
                         }
                         let mut bytes = [0u8; 32];
                         bytes.copy_from_slice(&value);
-                        author = Some(PubKey::from_bytes(bytes)?);
+                        author = Some(crate::PubKey::from_bytes(bytes)?);
                     }
                     TLV_KIND => {
                         if value.len() != 4 {
@@ -176,7 +177,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult, DecodeError> {
                             ));
                         }
                         let kind_bytes: [u8; 4] = (&value[0..4]).try_into().unwrap();
-                        kind = Some(Kind(u32::from_be_bytes(kind_bytes) as u16));
+                        kind = Some(crate::Kind(u32::from_be_bytes(kind_bytes) as u16));
                     }
                     _ => {
                         // ignore unknown TLV types
@@ -185,7 +186,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult, DecodeError> {
             }
 
             match id {
-                Some(id) => Ok(DecodeResult::Event(EventPointer {
+                Some(id) => Ok(DecodeResult::Event(crate::EventPointer {
                     id,
                     relays,
                     author,
@@ -229,7 +230,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult, DecodeError> {
                         }
                         let mut bytes = [0u8; 32];
                         bytes.copy_from_slice(&value);
-                        pubkey = Some(PubKey::from_bytes(bytes)?);
+                        pubkey = Some(crate::PubKey::from_bytes(bytes)?);
                     }
                     TLV_KIND => {
                         if value.len() != 4 {
@@ -239,7 +240,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult, DecodeError> {
                             ));
                         }
                         let kind_bytes: [u8; 4] = value.try_into().unwrap();
-                        kind = Some(Kind(u32::from_be_bytes(kind_bytes) as u16));
+                        kind = Some(crate::Kind(u32::from_be_bytes(kind_bytes) as u16));
                     }
                     _ => {
                         // ignore unknown TLV types
@@ -249,7 +250,7 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult, DecodeError> {
 
             match (kind, pubkey, identifier) {
                 (Some(kind), Some(pubkey), Some(identifier)) => {
-                    Ok(DecodeResult::Address(AddressPointer {
+                    Ok(DecodeResult::Address(crate::AddressPointer {
                         pubkey,
                         kind,
                         identifier,
@@ -263,14 +264,14 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult, DecodeError> {
     }
 }
 
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum EncodeError {
     #[error("bech32 encoding error: {0}")]
     Bech32(#[from] bech32::EncodeError),
 }
 
 /// encode a profile pointer as nprofile
-pub fn encode_nprofile(pk: &PubKey, relays: &[String]) -> String {
+pub fn encode_nprofile(pk: &crate::PubKey, relays: &[String]) -> String {
     let mut buf = Vec::new();
     write_tlv_entry(&mut buf, TLV_DEFAULT, pk.as_bytes());
 
@@ -278,12 +279,12 @@ pub fn encode_nprofile(pk: &PubKey, relays: &[String]) -> String {
         write_tlv_entry(&mut buf, TLV_RELAY, relay.as_bytes());
     }
 
-    bech32::encode::<Bech32>(Hrp::parse_unchecked("nprofile"), &buf)
+    bech32::encode::<bech32::Bech32>(bech32::Hrp::parse_unchecked("nprofile"), &buf)
         .expect("failed to encode nprofile")
 }
 
 /// encode an event pointer as nevent
-pub fn encode_nevent(id: &ID, relays: &[String], author: Option<&PubKey>) -> String {
+pub fn encode_nevent(id: &crate::ID, relays: &[String], author: Option<&crate::PubKey>) -> String {
     let mut buf = Vec::new();
     write_tlv_entry(&mut buf, TLV_DEFAULT, id.as_bytes());
 
@@ -295,11 +296,17 @@ pub fn encode_nevent(id: &ID, relays: &[String], author: Option<&PubKey>) -> Str
         write_tlv_entry(&mut buf, TLV_AUTHOR, author.as_bytes());
     }
 
-    bech32::encode::<Bech32>(Hrp::parse_unchecked("nevent"), &buf).expect("failed to encode nevent")
+    bech32::encode::<bech32::Bech32>(bech32::Hrp::parse_unchecked("nevent"), &buf)
+        .expect("failed to encode nevent")
 }
 
 /// encode an entity pointer as naddr
-pub fn encode_naddr(pk: &PubKey, kind: Kind, identifier: &str, relays: &[String]) -> String {
+pub fn encode_naddr(
+    pk: &crate::PubKey,
+    kind: crate::Kind,
+    identifier: &str,
+    relays: &[String],
+) -> String {
     let mut buf = Vec::new();
     write_tlv_entry(&mut buf, TLV_DEFAULT, identifier.as_bytes());
 
@@ -312,34 +319,35 @@ pub fn encode_naddr(pk: &PubKey, kind: Kind, identifier: &str, relays: &[String]
     let kind_bytes = (kind.0 as u32).to_be_bytes();
     write_tlv_entry(&mut buf, TLV_KIND, &kind_bytes);
 
-    bech32::encode::<Bech32>(Hrp::parse_unchecked("naddr"), &buf).expect("failed to encode naddr")
+    bech32::encode::<bech32::Bech32>(bech32::Hrp::parse_unchecked("naddr"), &buf)
+        .expect("failed to encode naddr")
 }
 
 /// encode a pointer using the appropriate encoding
-pub fn encode_pointer(pointer: &Pointer) -> String {
+pub fn encode_pointer(pointer: &crate::Pointer) -> String {
     match pointer {
-        Pointer::Profile(p) => {
+        crate::Pointer::Profile(p) => {
             if p.relays.is_empty() {
                 p.pubkey.to_npub()
             } else {
                 encode_nprofile(&p.pubkey, &p.relays)
             }
         }
-        Pointer::Event(p) => encode_nevent(&p.id, &p.relays, p.author.as_ref()),
-        Pointer::Address(p) => encode_naddr(&p.pubkey, p.kind, &p.identifier, &p.relays),
+        crate::Pointer::Event(p) => encode_nevent(&p.id, &p.relays, p.author.as_ref()),
+        crate::Pointer::Address(p) => encode_naddr(&p.pubkey, p.kind, &p.identifier, &p.relays),
     }
 }
 
 /// convert a bech32 string to a pointer
-pub fn to_pointer(code: &str) -> Result<Pointer, DecodeError> {
+pub fn to_pointer(code: &str) -> Result<crate::Pointer, DecodeError> {
     match decode(code)? {
-        DecodeResult::PubKey(pk) => Ok(Pointer::Profile(ProfilePointer {
+        DecodeResult::PubKey(pk) => Ok(crate::Pointer::Profile(crate::ProfilePointer {
             pubkey: pk,
             relays: Vec::new(),
         })),
-        DecodeResult::Profile(p) => Ok(Pointer::Profile(p)),
-        DecodeResult::Event(p) => Ok(Pointer::Event(p)),
-        DecodeResult::Address(p) => Ok(Pointer::Address(p)),
+        DecodeResult::Profile(p) => Ok(crate::Pointer::Profile(p)),
+        DecodeResult::Event(p) => Ok(crate::Pointer::Event(p)),
+        DecodeResult::Address(p) => Ok(crate::Pointer::Address(p)),
         _ => Err(DecodeError::NotAPointer),
     }
 }
@@ -371,13 +379,13 @@ fn write_tlv_entry(buf: &mut Vec<u8>, typ: u8, value: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::*;
 
     #[test]
     fn test_encode_decode_npub() {
-        let pk: PubKey =
-            "d91191e30e00444b942c0e82cad470b32af171764c2275bee0bd99377efd4075"
-                .parse()
-                .unwrap();
+        let pk: PubKey = "d91191e30e00444b942c0e82cad470b32af171764c2275bee0bd99377efd4075"
+            .parse()
+            .unwrap();
         let npub = pk.to_npub();
         assert_eq!(
             npub,
@@ -412,10 +420,9 @@ mod tests {
 
     #[test]
     fn test_encode_decode_nprofile() {
-        let pk: PubKey =
-            "d91191e30e00444b942c0e82cad470b32af171764c2275bee0bd99377efd4075"
-                .parse()
-                .unwrap();
+        let pk: PubKey = "d91191e30e00444b942c0e82cad470b32af171764c2275bee0bd99377efd4075"
+            .parse()
+            .unwrap();
         let relays = vec![
             "wss://relay.primal.net".to_string(),
             "wss://nostr.land".to_string(),

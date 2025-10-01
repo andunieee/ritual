@@ -1,7 +1,5 @@
-use url::Url;
-
 /// normalize a URL and replace http://, https:// schemes with ws://, wss://
-pub fn normalize_url(url_str: &str) -> Result<Url, url::ParseError> {
+pub fn normalize_url(url_str: &str) -> Result<url::Url, url::ParseError> {
     let url_str = match url_str.split_once("://") {
         Some((scheme, _))
             if scheme == "wss" || scheme == "ws" || scheme == "WSS" || scheme == "WS" =>
@@ -24,7 +22,7 @@ pub fn normalize_url(url_str: &str) -> Result<Url, url::ParseError> {
             }
         }
     };
-    let mut url = Url::parse(&url_str)?;
+    let mut url = url::Url::parse(&url_str)?;
 
     // normalize host to lowercase
     if let Some(host) = url.host_str() {

@@ -1,10 +1,4 @@
-use crate::{Event, Filter, Kind, ID};
-use serde::{de, de::SeqAccess, de::Visitor, Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::Value;
-use std::fmt;
-use thiserror::Error;
-
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, std::fmt::Debug)]
 pub enum EnvelopeError {
     #[error("empty message")]
     EmptyMessage,
@@ -50,24 +44,24 @@ pub enum EnvelopeError {
 }
 
 /// nostr message envelopes ("commands")
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(std::fmt::Debug, Clone, PartialEq, Eq)]
 pub enum Envelope {
     /// EVENT envelope (incoming from relay)
     InEvent {
         subscription_id: String,
-        event: Event,
+        event: crate::Event,
     },
     /// EVENT envelope (outgoing to relay)
-    OutEvent { event: Event },
+    OutEvent { event: crate::Event },
     /// REQ envelope
     Req {
         subscription_id: String,
-        filters: Vec<Filter>,
+        filters: Vec<crate::Filter>,
     },
     /// COUNT envelope (ask)
     CountAsk {
         subscription_id: String,
-        filter: Filter,
+        filter: crate::Filter,
     },
     /// COUNT envelope (reply)
     CountReply {
@@ -88,20 +82,20 @@ pub enum Envelope {
     },
     /// OK envelope
     Ok {
-        event_id: ID,
+        event_id: crate::ID,
         ok: bool,
         reason: String,
     },
     /// AUTH envelope (challenge)
     AuthChallenge { challenge: String },
     /// AUTH envelope (event)
-    AuthEvent { event: Event },
+    AuthEvent { event: crate::Event },
 }
 
-impl Serialize for Envelope {
+impl serde::Serialize for Envelope {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
-        S: Serializer,
+        S: serde::Serializer,
     {
         use serde::ser::SerializeSeq;
 
@@ -223,72 +217,74 @@ impl Serialize for Envelope {
     }
 }
 
-impl<'de> Deserialize<'de> for Envelope {
+impl<'de> serde::Deserialize<'de> for Envelope {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
-        D: Deserializer<'de>,
+        D: serde::de::Deserializer<'de>,
     {
         struct MsgVisitor;
 
-        impl<'de> Visitor<'de> for MsgVisitor {
+        impl<'de> serde::de::Visitor<'de> for MsgVisitor {
             type Value = Envelope;
 
-            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
                 f.write_str("a Nostr client message array")
             }
 
             fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Envelope, A::Error>
             where
-                A: SeqAccess<'de>,
+                A: serde::de::SeqAccess<'de>,
             {
                 let msg_type: String = seq
                     .next_element()?
-                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                    .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
 
                 match msg_type.as_str() {
                     "EVENT" => {
                         // check if this is a 2-element or 3-element array
-                        let second_element: Value = seq
+                        let second_element: serde_json::Value = seq
                             .next_element()?
-                            .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                            .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
 
-                        if let Ok(Some(third_element)) = seq.next_element::<Value>() {
+                        if let Ok(Some(third_element)) = seq.next_element::<serde_json::Value>() {
                             // 3-element array: ["EVENT", subscription_id, event]
                             let subscription_id = second_element
                                 .as_str()
                                 .ok_or_else(|| {
-                                    de::Error::custom(
+                                    serde::de::Error::custom(
                                         EnvelopeError::InvalidSubscriptionId.to_string(),
                                     )
                                 })?
                                 .to_string();
-                            let event: Event =
-                                serde_json::from_value(third_element).map_err(de::Error::custom)?;
+                            let event: crate::Event = serde_json::from_value(third_element)
+                                .map_err(serde::de::Error::custom)?;
                             Ok(Envelope::InEvent {
                                 subscription_id,
                                 event,
                             })
                         } else {
                             // 2-element array: ["EVENT", event]
-                            let event: Event = serde_json::from_value(second_element)
-                                .map_err(de::Error::custom)?;
+                            let event: crate::Event = serde_json::from_value(second_element)
+                                .map_err(serde::de::Error::custom)?;
                             Ok(Envelope::OutEvent { event })
                         }
                     }
                     "REQ" => {
                         let subscription_id: String = seq
                             .next_element()?
-                            .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                            .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
 
                         let mut filters = Vec::new();
-                        while let Some(filter_value) = seq.next_element::<Value>()? {
-                            let filter: Filter =
-                                serde_json::from_value(filter_value).map_err(de::Error::custom)?;
+                        while let Some(filter_value) = seq.next_element::<serde_json::Value>()? {
+                            let filter: crate::Filter = serde_json::from_value(filter_value)
+                                .map_err(serde::de::Error::custom)?;
                             filters.push(filter);
                         }
 
                         if filters.is_empty() {
-                            return Err(de::Error::custom(EnvelopeError::ReqNoFilter.to_string()));
+                            return Err(serde::de::Error::custom(
+                                EnvelopeError::ReqNoFilter.to_string(),
+                            ));
                         }
 
                         Ok(Envelope::Req {
@@ -299,13 +295,13 @@ impl<'de> Deserialize<'de> for Envelope {
                     "COUNT" => {
                         let subscription_id: String = seq
                             .next_element()?
-                            .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                            .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
 
-                        let third_element: Value = seq
+                        let third_element: serde_json::Value = seq
                             .next_element()?
-                            .ok_or_else(|| de::Error::invalid_length(2, &self))?;
+                            .ok_or_else(|| serde::de::Error::invalid_length(2, &self))?;
 
-                        match serde_json::from_value::<serde_json::Map<String, Value>>(
+                        match serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(
                             third_element.clone(),
                         ) {
                             Ok(count_result) if count_result.get("count").is_some() => {
@@ -315,7 +311,7 @@ impl<'de> Deserialize<'de> for Envelope {
 
                                 if let Some(count_val) = count_result.get("count") {
                                     count = count_val.as_i64().ok_or_else(|| {
-                                        de::Error::custom(
+                                        serde::de::Error::custom(
                                             EnvelopeError::InvalidCountValue.to_string(),
                                         )
                                     })? as u32;
@@ -323,7 +319,7 @@ impl<'de> Deserialize<'de> for Envelope {
                                 if let Some(hll) = count_result.get("hll") {
                                     if let Some(hll_str) = hll.as_str() {
                                         if hll_str.len() != 512 {
-                                            return Err(de::Error::custom(
+                                            return Err(serde::de::Error::custom(
                                                 EnvelopeError::InvalidHllLength.to_string(),
                                             ));
                                         }
@@ -339,7 +335,7 @@ impl<'de> Deserialize<'de> for Envelope {
                             }
                             _ => {
                                 if let Ok(filter) =
-                                    serde_json::from_value::<Filter>(third_element.clone())
+                                    serde_json::from_value::<crate::Filter>(third_element.clone())
                                 {
                                     // COUNT ask
                                     Ok(Envelope::CountAsk {
@@ -347,7 +343,7 @@ impl<'de> Deserialize<'de> for Envelope {
                                         filter,
                                     })
                                 } else {
-                                    return Err(de::Error::custom(
+                                    return Err(serde::de::Error::custom(
                                         EnvelopeError::InvalidCount.to_string(),
                                     ));
                                 }
@@ -357,15 +353,16 @@ impl<'de> Deserialize<'de> for Envelope {
                     "OK" => {
                         let event_id_str: String = seq
                             .next_element()?
-                            .ok_or_else(|| de::Error::invalid_length(1, &self))?;
-                        let event_id = ID::from_hex(&event_id_str).map_err(de::Error::custom)?;
+                            .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
+                        let event_id =
+                            crate::ID::from_hex(&event_id_str).map_err(serde::de::Error::custom)?;
                         let ok: bool = seq
                             .next_element()?
-                            .ok_or_else(|| de::Error::invalid_length(2, &self))?;
+                            .ok_or_else(|| serde::de::Error::invalid_length(2, &self))?;
                         let reason: String = seq
                             .next_element()?
                             .or_else(|| if ok { Some("".to_string()) } else { None })
-                            .ok_or_else(|| de::Error::invalid_length(2, &self))?;
+                            .ok_or_else(|| serde::de::Error::invalid_length(2, &self))?;
                         Ok(Envelope::Ok {
                             event_id,
                             ok,
@@ -375,45 +372,45 @@ impl<'de> Deserialize<'de> for Envelope {
                     "NOTICE" => {
                         let reason: String = seq
                             .next_element()?
-                            .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                            .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
                         Ok(Envelope::Notice(reason))
                     }
                     "EOSE" => {
                         let subscription_id: String = seq
                             .next_element()?
-                            .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                            .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
                         Ok(Envelope::Eose { subscription_id })
                     }
                     "CLOSE" => {
                         let subscription_id: String = seq
                             .next_element()?
-                            .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                            .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
                         Ok(Envelope::Close { subscription_id })
                     }
                     "CLOSED" => {
                         let subscription_id: String = seq
                             .next_element()?
-                            .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                            .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
                         let reason: String = seq
                             .next_element()?
-                            .ok_or_else(|| de::Error::invalid_length(2, &self))?;
+                            .ok_or_else(|| serde::de::Error::invalid_length(2, &self))?;
                         Ok(Envelope::Closed {
                             subscription_id,
                             reason,
                         })
                     }
                     "AUTH" => {
-                        let second_element: Value = seq
+                        let second_element: serde_json::Value = seq
                             .next_element()?
-                            .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                            .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
 
                         if second_element.is_object() {
-                            let event: Event = serde_json::from_value(second_element)
-                                .map_err(de::Error::custom)?;
-                            if event.kind == Kind(22242) {
+                            let event: crate::Event = serde_json::from_value(second_element)
+                                .map_err(serde::de::Error::custom)?;
+                            if event.kind == crate::Kind(22242) {
                                 Ok(Envelope::AuthEvent { event })
                             } else {
-                                Err(de::Error::custom(
+                                Err(serde::de::Error::custom(
                                     EnvelopeError::InvalidAuthEventKind.to_string(),
                                 ))
                             }
@@ -421,13 +418,15 @@ impl<'de> Deserialize<'de> for Envelope {
                             let challenge = second_element
                                 .as_str()
                                 .ok_or_else(|| {
-                                    de::Error::custom(EnvelopeError::InvalidChallenge.to_string())
+                                    serde::de::Error::custom(
+                                        EnvelopeError::InvalidChallenge.to_string(),
+                                    )
                                 })?
                                 .to_string();
                             Ok(Envelope::AuthChallenge { challenge })
                         }
                     }
-                    other => Err(de::Error::unknown_variant(
+                    other => Err(serde::de::Error::unknown_variant(
                         other,
                         &[
                             "EVENT", "REQ", "COUNT", "OK", "NOTICE", "EOSE", "CLOSE", "CLOSED",
@@ -465,7 +464,7 @@ impl Envelope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Kind, PubKey, ID};
+    use crate::{Kind, ID};
 
     #[test]
     fn test_decode_in_event() {
@@ -542,9 +541,11 @@ mod tests {
                 assert_eq!(filters[0].limit, Some(10));
                 assert_eq!(
                     filters[1].authors,
-                    Some(vec!["37a4aef1f8423ca076e4b7d99a8cabff40ddb8231f2a9f01081f15d7fa65c1ba"
-                        .parse()
-                        .unwrap()])
+                    Some(vec![
+                        "37a4aef1f8423ca076e4b7d99a8cabff40ddb8231f2a9f01081f15d7fa65c1ba"
+                            .parse()
+                            .unwrap()
+                    ])
                 );
             }
             _ => panic!("expected Req envelope"),

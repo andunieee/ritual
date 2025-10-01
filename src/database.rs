@@ -1,7 +1,3 @@
-use rkyv::rancor;
-
-use crate::{event::ArchivedEvent, Event, Filter, ID};
-
 pub type Result<T> = std::result::Result<T, DatabaseError>;
 
 #[derive(thiserror::Error, Debug)]
@@ -13,7 +9,7 @@ pub enum DatabaseError {
     Io(#[from] std::io::Error),
 
     #[error("serialization error: {0}")]
-    Serialization(#[from] rancor::Error),
+    Serialization(#[from] rkyv::rancor::Error),
 
     #[error("event with values out of expected boundaries {created_at}/{kind}")]
     OutOfBounds { created_at: i64, kind: u16 },
@@ -29,13 +25,13 @@ pub enum DatabaseError {
 }
 
 pub trait EventDatabase {
-    fn save_event(&self, event: &Event) -> Result<()>;
+    fn save_event(&self, event: &crate::Event) -> Result<()>;
 
-    fn delete_event(&self, id: &ID) -> Result<()>;
+    fn delete_event(&self, id: &crate::ID) -> Result<()>;
 
-    fn query_events<F>(&self, filters: Vec<Filter>, max_limit: usize, cb: F) -> Result<()>
+    fn query_events<F>(&self, filters: Vec<crate::Filter>, max_limit: usize, cb: F) -> Result<()>
     where
-        F: FnMut(&ArchivedEvent) -> Result<()>;
+        F: FnMut(&crate::ArchivedEvent) -> Result<()>;
 
-    fn replace_event(&self, event: &Event, with_address: bool) -> Result<()>;
+    fn replace_event(&self, event: &crate::Event, with_address: bool) -> Result<()>;
 }

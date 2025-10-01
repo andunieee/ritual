@@ -1,17 +1,5 @@
-use crate::database::{DatabaseError, EventDatabase, Result};
-use crate::filter::{TagQuery, TAG_HASHER_SEED};
-use crate::ArchivedID;
-use crate::{event::ArchivedEvent, Event, Filter, ID};
-use foldhash::fast::FixedState;
-use itertools::iproduct;
 use lmdb_master_sys as lmdb;
-use rkyv::rancor;
-use rkyv::rend::u16_le;
-use std::cell::Cell;
-use std::collections::VecDeque;
 use std::hash::{BuildHasher, Hash, Hasher};
-use std::path::Path;
-use std::rc::Rc;
 
 pub struct LMDBEventDatabase {
     pub path: String,
@@ -40,7 +28,7 @@ impl Drop for LMDBEventDatabase {
 
 impl LMDBEventDatabase {
     /// initialize the database and return a new instance
-    pub fn init(path: impl AsRef<Path>) -> Result<Self> {
+    pub fn init(path: impl AsRef<std::path::Path>) -> crate::database::Result<Self> {
         let path_str = path.as_ref().to_string_lossy().to_string();
 
         // create directory if it doesn't exist
@@ -102,9 +90,13 @@ impl LMDBEventDatabase {
         }
     }
 
-    fn save_internal(&self, txn: *mut lmdb::MDB_txn, event: &Event) -> Result<()> {
+    fn save_internal(
+        &self,
+        txn: *mut lmdb::MDB_txn,
+        event: &crate::Event,
+    ) -> crate::database::Result<()> {
         unsafe {
-            let event_data = rkyv::to_bytes::<rancor::Error>(event)?;
+            let event_data = rkyv::to_bytes::<rkyv::rancor::Error>(event)?;
             let id_u64 = event.id.as_u64_lossy();
             let id_bytes = id_u64.to_ne_bytes();
 
@@ -127,7 +119,7 @@ impl LMDBEventDatabase {
 
             // save indexes
             self.get_index_keys_for_event(
-                &rkyv::from_bytes_unchecked::<Event, rancor::Error>(&event_data)?,
+                &rkyv::from_bytes_unchecked::<crate::Event, rkyv::rancor::Error>(&event_data)?,
                 |index_key| {
                     let mut key = lmdb::MDB_val {
                         mv_size: index_key.key.len(),
@@ -154,7 +146,7 @@ impl LMDBEventDatabase {
     }
 
     /// internal delete function
-    fn delete_internal(&self, txn: *mut lmdb::MDB_txn, id: u64) -> Result<()> {
+    fn delete_internal(&self, txn: *mut lmdb::MDB_txn, id: u64) -> crate::database::Result<()> {
         unsafe {
             let id_bytes = id.to_ne_bytes();
             let mut key = lmdb::MDB_val {
@@ -174,12 +166,12 @@ impl LMDBEventDatabase {
                 &mut data as *mut lmdb::MDB_val,
             );
             if rc == lmdb::MDB_NOTFOUND {
-                return Err(DatabaseError::EventNotFound);
+                return Err(crate::database::DatabaseError::EventNotFound);
             }
             check_lmdb_error(rc)?;
 
             let raw = std::slice::from_raw_parts(data.mv_data as *const u8, data.mv_size);
-            let event = rkyv::from_bytes_unchecked::<Event, rancor::Error>(raw)?;
+            let event = rkyv::from_bytes_unchecked::<crate::Event, rkyv::rancor::Error>(raw)?;
 
             // delete all indexes
             self.get_index_keys_for_event(&event, |index_key| {
@@ -212,16 +204,21 @@ impl LMDBEventDatabase {
         Ok(())
     }
 
-    fn execute<F>(&self, rtxn: *mut lmdb::MDB_txn, queries: Vec<Query>, mut cb: F) -> Result<()>
+    fn execute<F>(
+        &self,
+        rtxn: *mut lmdb::MDB_txn,
+        queries: Vec<Query>,
+        mut cb: F,
+    ) -> crate::database::Result<()>
     where
-        F: FnMut(&ArchivedEvent) -> Result<()>,
+        F: FnMut(&crate::ArchivedEvent) -> crate::database::Result<()>,
     {
         unsafe {
             let mut cursors: Vec<Cursor> =
                 Vec::with_capacity(queries.iter().fold(0, |acc, q| acc + q.sub_queries.len()));
 
             for query in queries {
-                let rc_query = Rc::new(query);
+                let rc_query = std::rc::Rc::new(query);
 
                 for (i, sub_query) in rc_query.sub_queries.iter().enumerate() {
                     let prefix = &sub_query[0..sub_query.len() - 4];
@@ -264,7 +261,7 @@ impl LMDBEventDatabase {
                         query: rc_query.clone(),
                         last_read_timestamp: None,
 
-                        pulled: VecDeque::with_capacity(64),
+                        pulled: std::collections::VecDeque::with_capacity(64),
 
                         last_key: key,
                         last_val: val,
@@ -279,9 +276,12 @@ impl LMDBEventDatabase {
                 }
             }
 
-            let mut collected_events: Vec<(&ArchivedEvent, Rc<Cell<usize>>)> =
-                Vec::with_capacity(64);
-            let mut last_sent: Option<(&ArchivedID, Rc<Cell<usize>>)> = None;
+            let mut collected_events: Vec<(
+                &crate::ArchivedEvent,
+                std::rc::Rc<std::cell::Cell<usize>>,
+            )> = Vec::with_capacity(64);
+            let mut last_sent: Option<(&crate::ArchivedID, std::rc::Rc<std::cell::Cell<usize>>)> =
+                None;
 
             while cursors.len() > 0 {
                 collected_events.truncate(0);
@@ -327,7 +327,7 @@ impl LMDBEventDatabase {
                                 event_data.mv_data as *const u8,
                                 event_data.mv_size,
                             );
-                            let event: &ArchivedEvent = rkyv::access_unchecked(raw);
+                            let event: &crate::ArchivedEvent = rkyv::access_unchecked(raw);
 
                             // remove this from pulled list as it has been collected
                             c.pulled.pop_front();
@@ -407,15 +407,15 @@ impl LMDBEventDatabase {
         }
     }
 
-    fn plan_query(&self, filter: Filter, queries: &mut Vec<Query>, max_limit: usize) {
+    fn plan_query(&self, filter: crate::Filter, queries: &mut Vec<Query>, max_limit: usize) {
         let start_ts = filter
             .until
             .map(|ts| ts.0)
             .unwrap_or(u32::MAX)
             .to_ne_bytes();
         let end_ts = filter.since.map(|ts| ts.0).unwrap_or(0);
-        let mut extra_tag: Option<TagQuery> = None;
-        let mut second_best: Option<TagQuery> = None;
+        let mut extra_tag: Option<crate::filter::TagQuery> = None;
+        let mut second_best: Option<crate::filter::TagQuery> = None;
 
         if let Some(mut tags) = filter.tags {
             tags.sort_unstable_by_key(|tagq| tagq.worth());
@@ -432,11 +432,14 @@ impl LMDBEventDatabase {
                     sub_queries: tagq.to_sub_queries(&start_ts),
                     end_ts,
                     limit: max_limit,
-                    total_sent: Rc::new(Cell::new(0)),
+                    total_sent: std::rc::Rc::new(std::cell::Cell::new(0)),
                     extra_tag: tags.get(1).cloned(), // get the second tag if it exists as secondary filter
-                    extra_kinds: filter
-                        .kinds
-                        .map(|kinds| kinds.iter().map(|kind| u16_le::from(kind.0)).collect()),
+                    extra_kinds: filter.kinds.map(|kinds| {
+                        kinds
+                            .iter()
+                            .map(|kind| rkyv::rend::u16_le::from(kind.0))
+                            .collect()
+                    }),
                     extra_authors: filter
                         .authors
                         .map(|authors| authors.iter().map(|author| author.0).collect()),
@@ -457,7 +460,7 @@ impl LMDBEventDatabase {
             }
 
             let mut sub_queries = Vec::with_capacity(p_values.len() * k_values.len());
-            for (k_value, p_value) in iproduct!(k_values, p_values) {
+            for (k_value, p_value) in itertools::iproduct!(k_values, p_values) {
                 let mut key = Vec::from([0u8; 8 + 2 + 4]);
                 key[8 + 2..].copy_from_slice(&start_ts);
 
@@ -487,11 +490,14 @@ impl LMDBEventDatabase {
                     sub_queries,
                     end_ts,
                     limit: max_limit,
-                    total_sent: Rc::new(Cell::new(0)),
+                    total_sent: std::rc::Rc::new(std::cell::Cell::new(0)),
                     extra_tag: best_possible_tag.cloned(),
-                    extra_kinds: filter
-                        .kinds
-                        .map(|kinds| kinds.iter().map(|kind| u16_le::from(kind.0)).collect()),
+                    extra_kinds: filter.kinds.map(|kinds| {
+                        kinds
+                            .iter()
+                            .map(|kind| rkyv::rend::u16_le::from(kind.0))
+                            .collect()
+                    }),
                     extra_authors: filter
                         .authors
                         .map(|authors| authors.iter().map(|author| author.0).collect()),
@@ -530,7 +536,7 @@ impl LMDBEventDatabase {
                 sub_queries,
                 end_ts,
                 limit: max_limit,
-                total_sent: Rc::new(Cell::new(0)),
+                total_sent: std::rc::Rc::new(std::cell::Cell::new(0)),
                 extra_tag,
                 extra_kinds: None,
                 extra_authors: None,
@@ -554,7 +560,7 @@ impl LMDBEventDatabase {
                     .collect(),
                 end_ts,
                 limit: max_limit,
-                total_sent: Rc::new(Cell::new(0)),
+                total_sent: std::rc::Rc::new(std::cell::Cell::new(0)),
                 extra_tag,
                 extra_kinds: None,
                 extra_authors: None,
@@ -578,7 +584,7 @@ impl LMDBEventDatabase {
                     .collect(),
                 end_ts,
                 limit: max_limit,
-                total_sent: Rc::new(Cell::new(0)),
+                total_sent: std::rc::Rc::new(std::cell::Cell::new(0)),
                 extra_tag,
                 extra_kinds: None,
                 extra_authors: None,
@@ -595,7 +601,7 @@ impl LMDBEventDatabase {
                 sub_queries: best_tagq.to_sub_queries(&start_ts),
                 end_ts,
                 limit: max_limit,
-                total_sent: Rc::new(Cell::new(0)),
+                total_sent: std::rc::Rc::new(std::cell::Cell::new(0)),
                 extra_tag: second_best,
                 extra_kinds: None,
                 extra_authors: None,
@@ -610,16 +616,20 @@ impl LMDBEventDatabase {
             sub_queries: vec![start_ts.into()],
             end_ts,
             limit: max_limit,
-            total_sent: Rc::new(Cell::new(0)),
+            total_sent: std::rc::Rc::new(std::cell::Cell::new(0)),
             extra_tag: None,
             extra_kinds: None,
             extra_authors: None,
         });
     }
 
-    fn get_index_keys_for_event<F>(&self, event: &Event, mut cb: F) -> Result<()>
+    fn get_index_keys_for_event<F>(
+        &self,
+        event: &crate::Event,
+        mut cb: F,
+    ) -> crate::database::Result<()>
     where
-        F: FnMut(IndexKey) -> Result<()>,
+        F: FnMut(IndexKey) -> crate::database::Result<()>,
     {
         // this is so the events are ordered from newer to older
         let ts_bytes = &event.created_at.0.to_ne_bytes();
@@ -692,7 +702,8 @@ impl LMDBEventDatabase {
                 }
             }
 
-            let mut s = FixedState::with_seed(TAG_HASHER_SEED).build_hasher();
+            let mut s = foldhash::fast::FixedState::with_seed(crate::filter::TAG_HASHER_SEED)
+                .build_hasher();
             tag[1].hash(&mut s);
             let hash = s.finish();
             key[1..1 + 8].copy_from_slice(hash.to_ne_bytes().as_slice());
@@ -744,8 +755,8 @@ impl LMDBEventDatabase {
     }
 }
 
-impl EventDatabase for LMDBEventDatabase {
-    fn save_event(&self, event: &Event) -> Result<()> {
+impl crate::database::EventDatabase for LMDBEventDatabase {
+    fn save_event(&self, event: &crate::Event) -> crate::database::Result<()> {
         unsafe {
             let mut txn: *mut lmdb::MDB_txn = core::ptr::null_mut();
             check_lmdb_error(lmdb::mdb_txn_begin(
@@ -774,7 +785,7 @@ impl EventDatabase for LMDBEventDatabase {
             ) == 0
             {
                 lmdb::mdb_txn_abort(txn);
-                return Err(DatabaseError::DuplicateEvent);
+                return Err(crate::database::DatabaseError::DuplicateEvent);
             }
 
             self.save_internal(txn, event)?;
@@ -784,7 +795,11 @@ impl EventDatabase for LMDBEventDatabase {
         Ok(())
     }
 
-    fn replace_event(&self, event: &Event, with_address: bool) -> Result<()> {
+    fn replace_event(
+        &self,
+        event: &crate::Event,
+        with_address: bool,
+    ) -> crate::database::Result<()> {
         unsafe {
             let mut wtxn: *mut lmdb::MDB_txn = core::ptr::null_mut();
             check_lmdb_error(lmdb::mdb_txn_begin(
@@ -795,13 +810,16 @@ impl EventDatabase for LMDBEventDatabase {
             ))?;
 
             // create filter to find existing events
-            let mut filter = Filter::default();
+            let mut filter = crate::Filter::default();
             filter.kinds = Some(vec![event.kind]);
             filter.authors = Some(vec![event.pubkey]);
             filter.limit = Some(10);
 
             if with_address {
-                filter.tags = Some(vec![TagQuery("d".to_string(), vec![event.tags.get_d()])]);
+                filter.tags = Some(vec![crate::filter::TagQuery(
+                    "d".to_string(),
+                    vec![event.tags.get_d()],
+                )]);
             }
 
             let mut should_store = true;
@@ -831,9 +849,14 @@ impl EventDatabase for LMDBEventDatabase {
         Ok(())
     }
 
-    fn query_events<F>(&self, filters: Vec<Filter>, max_limit: usize, mut cb: F) -> Result<()>
+    fn query_events<F>(
+        &self,
+        filters: Vec<crate::Filter>,
+        max_limit: usize,
+        mut cb: F,
+    ) -> crate::database::Result<()>
     where
-        F: FnMut(&ArchivedEvent) -> Result<()>,
+        F: FnMut(&crate::ArchivedEvent) -> crate::database::Result<()>,
     {
         unsafe {
             let mut queries: Vec<Query> = Vec::with_capacity(64);
@@ -849,7 +872,7 @@ impl EventDatabase for LMDBEventDatabase {
             for filter in filters {
                 if filter.search.is_some() {
                     lmdb::mdb_txn_abort(txn);
-                    return Err(DatabaseError::InvalidFilter(
+                    return Err(crate::database::DatabaseError::InvalidFilter(
                         "search not supported".to_string(),
                     ));
                 }
@@ -876,7 +899,7 @@ impl EventDatabase for LMDBEventDatabase {
                         {
                             let raw =
                                 std::slice::from_raw_parts(data.mv_data as *const u8, data.mv_size);
-                            let event = rkyv::access_unchecked::<ArchivedEvent>(raw);
+                            let event = rkyv::access_unchecked::<crate::ArchivedEvent>(raw);
                             cb(event)?;
                         }
                     }
@@ -905,7 +928,7 @@ impl EventDatabase for LMDBEventDatabase {
         Ok(())
     }
 
-    fn delete_event(&self, id: &ID) -> Result<()> {
+    fn delete_event(&self, id: &crate::ID) -> crate::database::Result<()> {
         unsafe {
             let mut txn: *mut lmdb::MDB_txn = core::ptr::null_mut();
             check_lmdb_error(lmdb::mdb_txn_begin(
@@ -922,7 +945,11 @@ impl EventDatabase for LMDBEventDatabase {
 }
 
 // helper function to open a database
-fn open_db(txn: *mut lmdb::MDB_txn, name: &str, flags: u32) -> Result<lmdb::MDB_dbi> {
+fn open_db(
+    txn: *mut lmdb::MDB_txn,
+    name: &str,
+    flags: u32,
+) -> crate::database::Result<lmdb::MDB_dbi> {
     unsafe {
         let mut dbi: lmdb::MDB_dbi = 0;
         let c_name = std::ffi::CString::new(name).unwrap();
@@ -955,11 +982,11 @@ struct Query {
 
     // max number of results we'll return from this
     limit: usize,
-    total_sent: Rc<Cell<usize>>, // total sent for this query, shared among all sub_queries
+    total_sent: std::rc::Rc<std::cell::Cell<usize>>, // total sent for this query, shared among all sub_queries
 
     // these extra values will be matched against after we've read an event from the database
-    extra_tag: Option<TagQuery>,
-    extra_kinds: Option<Vec<u16_le>>,
+    extra_tag: Option<crate::filter::TagQuery>,
+    extra_kinds: Option<Vec<rkyv::rend::u16_le>>,
     extra_authors: Option<Vec<[u8; 32]>>,
 }
 
@@ -969,11 +996,11 @@ struct Cursor {
     i: usize,
 
     cursor: *mut lmdb::MDB_cursor,
-    query: Rc<Query>,
+    query: std::rc::Rc<Query>,
     last_read_timestamp: Option<u32>,
 
     // timestamps and ids we've pulled that were not yet collected
-    pulled: VecDeque<(u32, u64)>,
+    pulled: std::collections::VecDeque<(u32, u64)>,
 
     // last key-val we fetched (also the one with the lowest timestamp)
     last_key: lmdb::MDB_val,
@@ -1039,7 +1066,7 @@ impl Cursor {
     }
 }
 
-fn check_lmdb_error(lmdb_code: std::os::raw::c_int) -> Result<()> {
+fn check_lmdb_error(lmdb_code: std::os::raw::c_int) -> crate::database::Result<()> {
     unsafe {
         if lmdb_code == 0 {
             Ok(())
@@ -1052,7 +1079,7 @@ fn check_lmdb_error(lmdb_code: std::os::raw::c_int) -> Result<()> {
                     .to_string_lossy()
                     .to_string()
             };
-            return Err(DatabaseError::LMDB(err_str));
+            return Err(crate::database::DatabaseError::LMDB(err_str));
         }
     }
 }
@@ -1148,7 +1175,8 @@ pub extern "C" fn strfry_uint32_comparator(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{event_template::EventTemplate, Filter, Kind, SecretKey, Tags, Timestamp};
+    use crate::database::EventDatabase;
+    use crate::*;
     use assertables::{assert_contains, assert_ge, assert_lt};
 
     #[test]
@@ -1255,7 +1283,7 @@ mod tests {
         let mut results = Vec::new();
         store
             .query_events(vec![filter], 100, |event| {
-                results.push(rkyv::deserialize::<Event, rancor::Error>(event).unwrap());
+                results.push(rkyv::deserialize::<Event, rkyv::rancor::Error>(event).unwrap());
                 Ok(())
             })
             .expect("failed to query events");
@@ -1284,7 +1312,10 @@ mod tests {
 
         // try to save the same event again
         let result = store.save_event(&event);
-        assert!(matches!(result, Err(DatabaseError::DuplicateEvent)));
+        assert!(matches!(
+            result,
+            Err(crate::database::DatabaseError::DuplicateEvent)
+        ));
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
@@ -1356,7 +1387,7 @@ mod tests {
         let mut results = Vec::new();
         store
             .query_events(vec![Filter::default()], 100, |event| {
-                results.push(rkyv::deserialize::<Event, rancor::Error>(event).unwrap());
+                results.push(rkyv::deserialize::<Event, rkyv::rancor::Error>(event).unwrap());
                 Ok(())
             })
             .expect("failed to query events");
@@ -1379,7 +1410,7 @@ mod tests {
         results.clear();
         store
             .query_events(vec![Filter::default()], 100, |event| {
-                results.push(rkyv::deserialize::<Event, rancor::Error>(event).unwrap());
+                results.push(rkyv::deserialize::<Event, rkyv::rancor::Error>(event).unwrap());
                 Ok(())
             })
             .expect("failed to query events");
@@ -1402,7 +1433,7 @@ mod tests {
         results.clear();
         store
             .query_events(vec![Filter::default()], 100, |event| {
-                results.push(rkyv::deserialize::<Event, rancor::Error>(event).unwrap());
+                results.push(rkyv::deserialize::<Event, rkyv::rancor::Error>(event).unwrap());
                 Ok(())
             })
             .expect("failed to query events");
@@ -1769,7 +1800,8 @@ mod tests {
         let filters_clone = filters.clone();
         store
             .query_events(filters, 1000, |archived_event| {
-                let event = rkyv::deserialize::<Event, rancor::Error>(archived_event).unwrap();
+                let event =
+                    rkyv::deserialize::<Event, rkyv::rancor::Error>(archived_event).unwrap();
                 for (i, filter) in filters_clone.iter().enumerate() {
                     if filter.matches(&event) {
                         counts[i] += 1;

@@ -1,22 +1,6 @@
-use crate::{
-    normalize_url,
-    relay::{self, Relay, SubscriptionOptions},
-    Event, Filter,
-};
-use dashmap::{DashMap, DashSet};
-use std::{
-    collections::HashMap,
-    sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc,
-    },
-};
-use thiserror::Error;
-use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_with_wasm::alias as tokio;
-use url::Url;
 
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum EnsureError {
     #[error("in penalty box, {0}s remaining")]
     PenaltyBox(u32),
@@ -25,13 +9,13 @@ pub enum EnsureError {
     Normalize(#[from] url::ParseError),
 
     #[error("failed to connect: {0}")]
-    Connect(#[from] relay::ConnectError),
+    Connect(#[from] crate::relay::ConnectError),
 }
 
 #[derive(Debug)]
 pub struct Pool {
-    relays: Arc<Mutex<HashMap<String, Relay>>>,
-    penalty_box: Option<Arc<DashMap<String, (u16, u32)>>>, // (failures, remaining_seconds)
+    relays: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, crate::Relay>>>,
+    penalty_box: Option<std::sync::Arc<dashmap::DashMap<String, (u16, u32)>>>, // (failures, remaining_seconds)
 }
 
 #[derive(Default)]
@@ -46,7 +30,7 @@ pub struct PublishResult {
 
 #[derive(Debug)]
 pub enum Occurrence {
-    Event(Event, Url),
+    Event(crate::Event, url::Url),
     EOSE,
     Close,
 }
@@ -54,20 +38,20 @@ pub enum Occurrence {
 impl Pool {
     pub fn new(opts: PoolOptions) -> Self {
         let penalty_box = if opts.penalty_box {
-            Some(Arc::new(DashMap::new()))
+            Some(std::sync::Arc::new(dashmap::DashMap::new()))
         } else {
             None
         };
 
         Self {
-            relays: Arc::new(Mutex::new(HashMap::new())),
+            relays: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             penalty_box,
         }
     }
 
     /// get an existing relay connection if it exists, do not try to open a new one
-    pub async fn get_relay(&self, url: &str) -> Option<Relay> {
-        let normalized_url = normalize_url(url).ok()?;
+    pub async fn get_relay(&self, url: &str) -> Option<crate::Relay> {
+        let normalized_url = crate::normalize_url(url).ok()?;
         self.relays
             .lock()
             .await
@@ -76,8 +60,8 @@ impl Pool {
     }
 
     /// get or create a relay connection to the given url
-    pub async fn ensure_relay(&self, url: &str) -> Result<Relay, EnsureError> {
-        let normalized_url = normalize_url(url)?;
+    pub async fn ensure_relay(&self, url: &str) -> Result<crate::Relay, EnsureError> {
+        let normalized_url = crate::normalize_url(url)?;
 
         // check if relay already exists
         let mut relay_map = self.relays.lock().await;
@@ -96,7 +80,7 @@ impl Pool {
         }
 
         // create new relay connection
-        let (on_close, handle_close) = oneshot::channel::<String>();
+        let (on_close, handle_close) = tokio::sync::oneshot::channel::<String>();
         let nm_ = normalized_url.clone();
         let relay_map_on_close = self.relays.clone();
         tokio::spawn(async move {
@@ -117,7 +101,7 @@ impl Pool {
             }
         });
 
-        match Relay::connect(normalized_url.to_owned(), Some(on_close)).await {
+        match crate::Relay::connect(normalized_url.to_owned(), Some(on_close)).await {
             Ok(relay) => {
                 relay_map.insert(normalized_url.to_string(), relay.clone());
                 Ok(relay)
@@ -141,9 +125,9 @@ impl Pool {
     pub async fn publish_many(
         &mut self,
         urls: Vec<String>,
-        event: Event,
-    ) -> mpsc::UnboundedReceiver<PublishResult> {
-        let (tx, rx) = mpsc::unbounded_channel();
+        event: crate::Event,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<PublishResult> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
         for url in urls {
             let tx = tx.clone();
@@ -179,9 +163,9 @@ impl Pool {
     pub async fn query(
         &self,
         urls: Vec<String>,
-        filter: Filter,
-        subscription_options: SubscriptionOptions,
-    ) -> Vec<Event> {
+        filter: crate::Filter,
+        subscription_options: crate::SubscriptionOptions,
+    ) -> Vec<crate::Event> {
         let mut events = Vec::with_capacity(filter.limit.unwrap_or(500) * urls.len() / 2);
 
         let mut occurrences = self.subscribe(urls, filter, subscription_options).await;
@@ -204,19 +188,19 @@ impl Pool {
     pub async fn subscribe(
         &self,
         urls: Vec<String>,
-        filter: Filter,
-        subscription_options: SubscriptionOptions,
-    ) -> mpsc::Receiver<Occurrence> {
-        let (tx, rx) = mpsc::channel(256);
-        let skip_ids = Arc::new(DashSet::new());
-        let eose_counter = Arc::new(AtomicUsize::new(urls.len()));
-        let closed_counter = Arc::new(AtomicUsize::new(urls.len()));
-        let eosed = Arc::new(AtomicBool::new(false));
+        filter: crate::Filter,
+        subscription_options: crate::SubscriptionOptions,
+    ) -> tokio::sync::mpsc::Receiver<Occurrence> {
+        let (tx, rx) = tokio::sync::mpsc::channel(256);
+        let skip_ids = std::sync::Arc::new(dashmap::DashSet::new());
+        let eose_counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(urls.len()));
+        let closed_counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(urls.len()));
+        let eosed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         for url in urls {
             let filter = filter.clone();
             let pool = self.clone();
-            let opts = SubscriptionOptions {
+            let opts = crate::SubscriptionOptions {
                 skip_ids: Some(skip_ids.clone()),
                 ..subscription_options.clone()
             };
@@ -230,7 +214,7 @@ impl Pool {
                     let mut sub = relay.subscribe(filter, opts).await;
                     while let Some(occ) = sub.recv().await {
                         match occ {
-                            relay::Occurrence::Event(event) => {
+                            crate::relay::Occurrence::Event(event) => {
                                 if tx
                                     .send(Occurrence::Event(event, relay.url.clone()))
                                     .await
@@ -240,9 +224,11 @@ impl Pool {
                                     return;
                                 }
                             }
-                            relay::Occurrence::EOSE => {
-                                if eose_counter.fetch_sub(1, Ordering::SeqCst) == 1 {
-                                    if !eosed.swap(true, Ordering::SeqCst) {
+                            crate::relay::Occurrence::EOSE => {
+                                if eose_counter.fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
+                                    == 1
+                                {
+                                    if !eosed.swap(true, std::sync::atomic::Ordering::SeqCst) {
                                         if tx.send(Occurrence::EOSE).await.is_err() {
                                             // receiver dropped
                                             return;
@@ -250,14 +236,14 @@ impl Pool {
                                     }
                                 }
                             }
-                            relay::Occurrence::Close(_) => break,
+                            crate::relay::Occurrence::Close(_) => break,
                         }
                     }
                 }
 
                 // if we are here, it means ensure_relay or subscribe failed or the subscription ended.
-                if eose_counter.fetch_sub(1, Ordering::SeqCst) == 1 {
-                    if !eosed.swap(true, Ordering::SeqCst) {
+                if eose_counter.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+                    if !eosed.swap(true, std::sync::atomic::Ordering::SeqCst) {
                         if tx.send(Occurrence::EOSE).await.is_err() {
                             // receiver dropped
                             return;
@@ -265,7 +251,7 @@ impl Pool {
                     }
                 }
 
-                if closed_counter.fetch_sub(1, Ordering::SeqCst) == 1 {
+                if closed_counter.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1 {
                     if tx.send(Occurrence::Close).await.is_err() {
                         // receiver dropped
                         return;
@@ -291,11 +277,9 @@ impl Clone for Pool {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
-
-    use crate::Kind;
-
     use super::*;
+    use crate::*;
+    use std::collections::HashSet;
 
     #[tokio::test]
     async fn test_pool_subscribe_multiple() {

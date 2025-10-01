@@ -1,41 +1,45 @@
-use crate::{Kind, PubKey, Signature, Tags, Timestamp, ID};
-use secp256k1::{schnorr, XOnlyPublicKey, SECP256K1};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use std::fmt;
+use sha2::Digest;
 
 /// represents a signed nostr event
 #[derive(
-    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Deserialize, rkyv::Serialize,
+    Debug,
+    Clone,
+    serde::Serialize,
+    serde::Deserialize,
+    rkyv::Archive,
+    rkyv::Deserialize,
+    rkyv::Serialize,
 )]
 pub struct Event {
-    pub id: ID,
-    pub pubkey: PubKey,
-    pub created_at: Timestamp,
-    pub kind: Kind,
-    pub tags: Tags,
+    pub id: crate::ID,
+    pub pubkey: crate::PubKey,
+    pub created_at: crate::Timestamp,
+    pub kind: crate::Kind,
+    pub tags: crate::Tags,
     pub content: String,
-    pub sig: Signature,
+    pub sig: crate::Signature,
 }
 
 impl Event {
     pub fn verify_signature(&self) -> bool {
-        let pubkey = match XOnlyPublicKey::from_byte_array(self.pubkey.0) {
+        let pubkey = match secp256k1::XOnlyPublicKey::from_byte_array(self.pubkey.0) {
             Ok(pk) => pk,
             Err(_) => return false,
         };
 
-        let signature = schnorr::Signature::from_byte_array(self.sig.0);
+        let signature = secp256k1::schnorr::Signature::from_byte_array(self.sig.0);
 
-        let hash = Sha256::digest(&self.serialize());
-        SECP256K1.verify_schnorr(&signature, &hash, &pubkey).is_ok()
+        let hash = sha2::Sha256::digest(&self.serialize());
+        secp256k1::SECP256K1
+            .verify_schnorr(&signature, &hash, &pubkey)
+            .is_ok()
     }
 
     /// check if the event ID matches the computed ID
     pub fn check_id(&self) -> bool {
         let serialized = self.serialize();
-        let hash = Sha256::digest(&serialized);
-        let id = ID::from_bytes(hash.into());
+        let hash = sha2::Sha256::digest(&serialized);
+        let id = crate::ID::from_bytes(hash.into());
 
         id == self.id
     }
@@ -54,8 +58,8 @@ impl Event {
     }
 }
 
-impl fmt::Display for Event {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for Event {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match serde_json::to_string(self) {
             Ok(json) => write!(f, "{}", json),
             Err(err) => write!(f, "Event({} >> {})", self.id, err),

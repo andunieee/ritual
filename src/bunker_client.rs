@@ -1,29 +1,14 @@
-use std::fmt::Debug;
-use std::sync::Arc;
-use std::time::Duration;
-
-use crate::filter::TagQuery;
-use crate::SecretKey;
-use crate::{
-    keys, message_encryption, pool::Pool, Event, EventTemplate, Filter, Kind, PubKey, Tags,
-    Timestamp,
-};
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-use slotmap::{new_key_type, Key, KeyData, SlotMap};
-use thiserror::Error;
-use tokio::sync::{oneshot, Mutex};
+use slotmap::Key;
 use tokio_with_wasm::alias as tokio;
-use url::Url;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, serde::Serialize)]
 struct Request<'a> {
     id: String,
     method: &'a str,
     params: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct Response {
     pub id: String,
     pub result: Option<String>,
@@ -32,13 +17,13 @@ pub struct Response {
 
 pub struct AuthURLHandler(Box<dyn Fn(&str) + Send + Sync>);
 
-impl Debug for AuthURLHandler {
+impl std::fmt::Debug for AuthURLHandler {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "fn")
     }
 }
 
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum RPCError {
     #[error("we're not connected to any relay")]
     NoRelays(Vec<String>),
@@ -50,16 +35,16 @@ pub enum RPCError {
     Timeout,
 
     #[error("request encryption failed: {0}")]
-    Encryption(#[from] message_encryption::EncryptError),
+    Encryption(#[from] crate::message_encryption::EncryptError),
 
     #[error("response decryption failed: {0}")]
-    Decryption(#[from] message_encryption::DecryptError),
+    Decryption(#[from] crate::message_encryption::DecryptError),
 
     #[error("bunker replied with an error: {0}")]
     Response(String),
 }
 
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum ConnectError {
     #[error("rpc call failed: {0}")]
     RPC(#[from] RPCError),
@@ -68,19 +53,19 @@ pub enum ConnectError {
     URI(#[from] url::ParseError),
 
     #[error("bunker uri contains an invalid public key")]
-    InvalidPublicKeyHost(#[from] keys::PubKeyError),
+    InvalidPublicKeyHost(#[from] crate::keys::PubKeyError),
 }
 
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum GetPublicKeyError {
     #[error("rpc call failed: {0}")]
     RPC(#[from] RPCError),
 
     #[error("got an invalid public key")]
-    InvalidPublicKey(#[from] keys::PubKeyError),
+    InvalidPublicKey(#[from] crate::keys::PubKeyError),
 }
 
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum FinalizeError {
     #[error("bunker gave us an invalid event")]
     InvalidEvent,
@@ -92,33 +77,37 @@ pub enum FinalizeError {
     RPC(#[from] RPCError),
 }
 
-new_key_type! { struct RequestKey ; }
+slotmap::new_key_type! { struct RequestKey ; }
 
 #[derive(Clone, Debug)]
 pub struct BunkerClient {
-    client_secret_key: SecretKey,
-    pool: Pool,
-    target: PubKey,
+    client_secret_key: crate::SecretKey,
+    pool: crate::Pool,
+    target: crate::PubKey,
     relays: Vec<String>,
     conversation_key: [u8; 32],
-    awaiting_responses: Arc<Mutex<SlotMap<RequestKey, oneshot::Sender<Response>>>>,
-    on_auth_url: Arc<Option<AuthURLHandler>>,
+    awaiting_responses: std::sync::Arc<
+        tokio::sync::Mutex<slotmap::SlotMap<RequestKey, tokio::sync::oneshot::Sender<Response>>>,
+    >,
+    on_auth_url: std::sync::Arc<Option<AuthURLHandler>>,
 
     // memoized
-    get_pubkey_response: Arc<tokio::sync::Mutex<Option<PubKey>>>,
+    get_pubkey_response: std::sync::Arc<tokio::sync::Mutex<Option<crate::PubKey>>>,
 }
 
 impl BunkerClient {
     pub fn new(
-        client_secret_key: SecretKey,
-        target_pubkey: PubKey,
+        client_secret_key: crate::SecretKey,
+        target_pubkey: crate::PubKey,
         relays: Vec<String>,
-        pool: Pool,
+        pool: crate::Pool,
         on_auth_url: Option<AuthURLHandler>,
     ) -> Self {
         let client_pubkey = client_secret_key.pubkey();
-        let conversation_key =
-            message_encryption::generate_conversation_key(&target_pubkey, &client_secret_key);
+        let conversation_key = crate::message_encryption::generate_conversation_key(
+            &target_pubkey,
+            &client_secret_key,
+        );
 
         let bunker = Self {
             client_secret_key,
@@ -126,9 +115,11 @@ impl BunkerClient {
             target: target_pubkey,
             relays,
             conversation_key,
-            awaiting_responses: Arc::new(Mutex::new(SlotMap::with_capacity_and_key(10))),
-            on_auth_url: Arc::new(on_auth_url),
-            get_pubkey_response: Arc::new(tokio::sync::Mutex::new(None)),
+            awaiting_responses: std::sync::Arc::new(tokio::sync::Mutex::new(
+                slotmap::SlotMap::with_capacity_and_key(10),
+            )),
+            on_auth_url: std::sync::Arc::new(on_auth_url),
+            get_pubkey_response: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
         };
 
         let pool = bunker.pool.clone();
@@ -136,13 +127,13 @@ impl BunkerClient {
         let on_auth_url = bunker.on_auth_url.clone();
         let awaiting_responses = bunker.awaiting_responses.clone();
         tokio::spawn(async move {
-            let filter = Filter {
-                kinds: Some(vec![Kind(24133)]),
-                tags: Some(vec![TagQuery(
+            let filter = crate::Filter {
+                kinds: Some(vec![crate::Kind(24133)]),
+                tags: Some(vec![crate::filter::TagQuery(
                     "#p".to_string(),
                     vec![client_pubkey.to_hex()],
                 )]),
-                since: Some(Timestamp::now()),
+                since: Some(crate::Timestamp::now()),
                 ..Default::default()
             };
 
@@ -162,14 +153,15 @@ impl BunkerClient {
                                     continue;
                                 }
 
-                                if let Ok(plain) =
-                                    message_encryption::decrypt(&event.content, &conversation_key)
-                                {
+                                if let Ok(plain) = crate::message_encryption::decrypt(
+                                    &event.content,
+                                    &conversation_key,
+                                ) {
                                     if let Ok(resp) = serde_json::from_str::<Response>(&plain) {
                                         let rk = match lowercase_hex::decode_to_array::<&str, 8>(
                                             &resp.id,
                                         ) {
-                                            Ok(bytes) => RequestKey(KeyData::from_ffi(
+                                            Ok(bytes) => RequestKey(slotmap::KeyData::from_ffi(
                                                 u64::from_be_bytes(bytes),
                                             )),
                                             Err(_) => continue,
@@ -203,16 +195,16 @@ impl BunkerClient {
     }
 
     pub async fn connect(
-        client_secret_key: SecretKey,
+        client_secret_key: crate::SecretKey,
         bunker_url: &str,
-        pool: Pool,
+        pool: crate::Pool,
         on_auth_url: Option<AuthURLHandler>,
     ) -> Result<Self, ConnectError> {
-        let url = Url::parse(bunker_url)?;
+        let url = url::Url::parse(bunker_url)?;
         let host = url
             .host_str()
             .ok_or(ConnectError::URI(url::ParseError::EmptyHost))?;
-        let pk: PubKey = host.parse()?;
+        let pk: crate::PubKey = host.parse()?;
         let relays = url
             .query_pairs()
             .filter(|(k, _)| k == "relay")
@@ -239,7 +231,7 @@ impl BunkerClient {
         Ok(())
     }
 
-    pub async fn get_public_key(&self) -> Result<PubKey, GetPublicKeyError> {
+    pub async fn get_public_key(&self) -> Result<crate::PubKey, GetPublicKeyError> {
         {
             let guard = self.get_pubkey_response.lock().await;
             if let Some(pk) = *guard {
@@ -248,7 +240,7 @@ impl BunkerClient {
         }
 
         let resp = self.rpc("get_public_key", vec![]).await?;
-        let pk: PubKey = resp.parse()?;
+        let pk: crate::PubKey = resp.parse()?;
 
         {
             let mut guard = self.get_pubkey_response.lock().await;
@@ -260,11 +252,12 @@ impl BunkerClient {
 
     pub async fn finalize_event(
         &self,
-        event_template: EventTemplate,
-    ) -> Result<Event, FinalizeError> {
-        let event_json = json!(event_template).to_string();
+        event_template: crate::EventTemplate,
+    ) -> Result<crate::Event, FinalizeError> {
+        let event_json = serde_json::json!(event_template).to_string();
         let resp = self.rpc("sign_event", vec![event_json]).await?;
-        let event: Event = serde_json::from_str(&resp).map_err(|_| FinalizeError::InvalidEvent)?;
+        let event: crate::Event =
+            serde_json::from_str(&resp).map_err(|_| FinalizeError::InvalidEvent)?;
 
         if !event.verify_signature() {
             return Err(FinalizeError::InvalidSignature);
@@ -275,7 +268,7 @@ impl BunkerClient {
 
     pub async fn nip44_encrypt(
         &self,
-        target_pubkey: &PubKey,
+        target_pubkey: &crate::PubKey,
         plaintext: &str,
     ) -> Result<String, RPCError> {
         self.rpc(
@@ -287,7 +280,7 @@ impl BunkerClient {
 
     pub async fn nip44_decrypt(
         &self,
-        target_pubkey: &PubKey,
+        target_pubkey: &crate::PubKey,
         ciphertext: &str,
     ) -> Result<String, RPCError> {
         self.rpc(
@@ -299,7 +292,7 @@ impl BunkerClient {
 
     pub async fn nip04_encrypt(
         &self,
-        target_pubkey: &PubKey,
+        target_pubkey: &crate::PubKey,
         plaintext: &str,
     ) -> Result<String, RPCError> {
         self.rpc(
@@ -311,7 +304,7 @@ impl BunkerClient {
 
     pub async fn nip04_decrypt(
         &self,
-        target_pubkey: &PubKey,
+        target_pubkey: &crate::PubKey,
         ciphertext: &str,
     ) -> Result<String, RPCError> {
         self.rpc(
@@ -323,7 +316,7 @@ impl BunkerClient {
 
     async fn rpc(&self, method: &str, params: Vec<String>) -> Result<String, RPCError> {
         // prepare response listener
-        let (tx, rx) = oneshot::channel::<Response>();
+        let (tx, rx) = tokio::sync::oneshot::channel::<Response>();
         let rk = self.awaiting_responses.lock().await.insert(tx);
 
         let req = Request {
@@ -333,13 +326,13 @@ impl BunkerClient {
         };
         let req_json =
             serde_json::to_string(&req).expect("request should not fail to encode as json");
-        let content = message_encryption::encrypt(&req_json, &self.conversation_key, None)?;
+        let content = crate::message_encryption::encrypt(&req_json, &self.conversation_key, None)?;
 
-        let event = EventTemplate {
+        let event = crate::EventTemplate {
             content,
-            created_at: Timestamp::now(),
-            kind: Kind(24133),
-            tags: Tags(vec![vec!["p".to_string(), self.target.to_hex()]]),
+            created_at: crate::Timestamp::now(),
+            kind: crate::Kind(24133),
+            tags: crate::Tags(vec![vec!["p".to_string(), self.target.to_hex()]]),
             ..Default::default()
         }
         .finalize(&self.client_secret_key);
@@ -359,7 +352,7 @@ impl BunkerClient {
         }
 
         // wait for response
-        match tokio::time::timeout(Duration::from_secs(15), rx).await {
+        match tokio::time::timeout(std::time::Duration::from_secs(15), rx).await {
             Ok(Ok(resp)) => {
                 if let Some(err) = resp.error {
                     Err(RPCError::Response(err))

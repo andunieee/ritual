@@ -1,18 +1,11 @@
-use base64::{engine::general_purpose, Engine as _};
-use chacha20::{
-    cipher::{KeyIvInit, StreamCipher},
-    ChaCha20,
-};
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
-use thiserror::Error;
-
-use crate::{PubKey, SecretKey};
+use base64::Engine;
+use chacha20::cipher::{KeyIvInit, StreamCipher};
+use hmac::Mac;
 
 const VERSION: u8 = 2;
 const MAX_PLAINTEXT_SIZE: usize = 65535;
 
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum EncryptError {
     #[error("plaintext too large")]
     PlaintextTooLarge,
@@ -23,7 +16,7 @@ pub fn encrypt(
     conversation_key: &[u8; 32],
     custom_nonce: Option<[u8; 32]>,
 ) -> Result<String, EncryptError> {
-    let nonce = custom_nonce.unwrap_or_else(|| SecretKey::generate().0);
+    let nonce = custom_nonce.unwrap_or_else(|| crate::SecretKey::generate().0);
     let (cc20key, cc20nonce, hmac_key) = message_keys(conversation_key, nonce);
 
     let plain = plaintext.as_bytes();
@@ -38,7 +31,7 @@ pub fn encrypt(
     padded.extend_from_slice(plain);
     padded.resize(2 + padded_len, 0);
 
-    let mut cipher = ChaCha20::new(&cc20key.into(), &cc20nonce.into());
+    let mut cipher = chacha20::ChaCha20::new(&cc20key.into(), &cc20nonce.into());
     cipher.apply_keystream(&mut padded);
 
     let mac = sha256_hmac(&hmac_key, &padded, nonce);
@@ -49,10 +42,10 @@ pub fn encrypt(
     concat.extend_from_slice(&padded);
     concat.extend_from_slice(&mac);
 
-    Ok(general_purpose::STANDARD.encode(&concat))
+    Ok(base64::engine::general_purpose::STANDARD.encode(&concat))
 }
 
-#[derive(Error, Debug, PartialEq)]
+#[derive(thiserror::Error, Debug, PartialEq)]
 pub enum DecryptError {
     #[error("invalid payload length")]
     InvalidPayloadLength,
@@ -85,7 +78,7 @@ pub fn decrypt(
         return Err(DecryptError::UnknownVersion);
     }
 
-    let decoded = general_purpose::STANDARD.decode(b64_ciphertext_wrapped)?;
+    let decoded = base64::engine::general_purpose::STANDARD.decode(b64_ciphertext_wrapped)?;
 
     if decoded[0] != VERSION {
         return Err(DecryptError::UnknownVersion);
@@ -110,7 +103,7 @@ pub fn decrypt(
     }
 
     let mut padded = ciphertext.to_vec();
-    let mut cipher = ChaCha20::new(&cc20key.into(), &cc20nonce.into());
+    let mut cipher = chacha20::ChaCha20::new(&cc20key.into(), &cc20nonce.into());
     cipher.apply_keystream(&mut padded);
 
     let unpadded_len = u16::from_be_bytes([padded[0], padded[1]]) as usize;
@@ -129,7 +122,7 @@ pub fn decrypt(
     Ok(String::from_utf8_lossy(unpadded).to_string())
 }
 
-pub fn generate_conversation_key(pubkey: &PubKey, sk: &SecretKey) -> [u8; 32] {
+pub fn generate_conversation_key(pubkey: &crate::PubKey, sk: &crate::SecretKey) -> [u8; 32] {
     let shared_secret =
         secp256k1::ecdh::shared_secret_point(&pubkey.to_ecdsa_key(), &sk.to_ecdsa_key());
 
@@ -152,7 +145,7 @@ fn message_keys(conversation_key: &[u8; 32], nonce: [u8; 32]) -> ([u8; 32], [u8;
 
 #[inline]
 fn sha256_hmac(key: &[u8], ciphertext: &[u8], nonce: [u8; 32]) -> Vec<u8> {
-    let mut mac = Hmac::<Sha256>::new_from_slice(key)
+    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(key)
         .expect("hmac can take key of any size so this never fails");
     mac.update(&nonce);
     mac.update(ciphertext);
@@ -170,7 +163,7 @@ fn calc_padded_len(s_len: usize) -> usize {
 
 #[inline]
 fn hkdf_extract(salt: &[u8], input_key: &[u8]) -> [u8; 32] {
-    let mut hmac = Hmac::<Sha256>::new_from_slice(salt)
+    let mut hmac = hmac::Hmac::<sha2::Sha256>::new_from_slice(salt)
         .expect("hmac can take keys of any size so this never fails");
     hmac.update(input_key);
     hmac.finalize()
@@ -182,7 +175,7 @@ fn hkdf_extract(salt: &[u8], input_key: &[u8]) -> [u8; 32] {
 fn hkdf_expand_into(pseudorandomkey: &[u8], info: &[u8], iterations: usize) -> Vec<u8> {
     let mut output = Vec::with_capacity(iterations * 32);
 
-    let mut hmac = Hmac::<Sha256>::new_from_slice(pseudorandomkey)
+    let mut hmac = hmac::Hmac::<sha2::Sha256>::new_from_slice(pseudorandomkey)
         .expect("hmac can take keys of any size so this never fails");
 
     let mut counter = 1u8;
@@ -194,7 +187,7 @@ fn hkdf_expand_into(pseudorandomkey: &[u8], info: &[u8], iterations: usize) -> V
 
         // prepare next iteration
         counter += 1;
-        hmac = Hmac::<Sha256>::new_from_slice(pseudorandomkey)
+        hmac = hmac::Hmac::<sha2::Sha256>::new_from_slice(pseudorandomkey)
             .expect("hmac can take keys of any size so this never fails");
         hmac.update(&val);
 
@@ -208,6 +201,7 @@ fn hkdf_expand_into(pseudorandomkey: &[u8], info: &[u8], iterations: usize) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::*;
     use sha2::Digest;
 
     fn assert_crypt_sec(
@@ -308,7 +302,7 @@ mod tests {
         lowercase_hex::decode_to_slice(salt_hex, &mut salt[0..32]).unwrap();
 
         let plaintext = pattern.repeat(repeat);
-        let mut h = Sha256::new();
+        let mut h = sha2::Sha256::new();
         h.update(plaintext.as_bytes());
         let actual_plaintext_sha256 = lowercase_hex::encode(h.finalize());
         assert_eq!(
@@ -317,7 +311,7 @@ mod tests {
         );
 
         let actual_payload = encrypt(&plaintext, &conversation_key, Some(salt)).unwrap();
-        let mut h = Sha256::new();
+        let mut h = sha2::Sha256::new();
         h.update(actual_payload.as_bytes());
         let actual_payload_sha256 = lowercase_hex::encode(h.finalize());
         assert_eq!(

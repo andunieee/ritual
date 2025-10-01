@@ -1,9 +1,4 @@
-use std::fmt::Debug;
-use thiserror::Error;
-
-use crate::{bunker_client::BunkerClient, event_template::EventTemplate, Event, SecretKey};
-
-#[derive(Debug, Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("unauthorized by user")]
     Unauthorized,
@@ -14,12 +9,15 @@ pub enum Error {
 
 #[derive(Debug, Clone)]
 pub enum Finalizer {
-    Plain(SecretKey),
-    Bunker(BunkerClient),
+    Plain(crate::SecretKey),
+    Bunker(crate::bunker_client::BunkerClient),
 }
 
 impl Finalizer {
-    pub async fn finalize_event(&self, evt: EventTemplate) -> Result<Event, Error> {
+    pub async fn finalize_event(
+        &self,
+        evt: crate::event_template::EventTemplate,
+    ) -> Result<crate::Event, Error> {
         match self {
             Self::Plain(sk) => Ok(evt.finalize(sk)),
             Self::Bunker(b) => b

@@ -1,12 +1,5 @@
-use crate::{keys, SecretKey};
-use bech32::{Bech32, Hrp};
-use chacha20poly1305::{
-    aead::{Aead, KeyInit, Payload},
-    XChaCha20Poly1305, XNonce,
-};
-use scrypt::{scrypt, Params};
+use chacha20poly1305::aead::{Aead, KeyInit};
 use secp256k1::rand::TryRngCore;
-use thiserror::Error;
 use unicode_normalization::UnicodeNormalization;
 
 /// key security byte values
@@ -33,7 +26,7 @@ impl From<KeySecurityByte> for u8 {
     }
 }
 
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum EncryptError {
     #[error("invalid key length for cipher")]
     InvalidCipherKeyLength,
@@ -47,7 +40,7 @@ pub enum EncryptError {
 
 /// encrypt a secret key with a password
 pub fn encrypt(
-    secret_key: &SecretKey,
+    secret_key: &crate::SecretKey,
     password: &str,
     log_n: u8,
     ksb: KeySecurityByte,
@@ -72,13 +65,13 @@ pub fn encrypt(
     let ad = [ksb.into()];
     concat[2 + 16 + 24] = ad[0];
 
-    let cipher = XChaCha20Poly1305::new_from_slice(&key)
+    let cipher = chacha20poly1305::XChaCha20Poly1305::new_from_slice(&key)
         .map_err(|_| EncryptError::InvalidCipherKeyLength)?;
-    let xnonce = XNonce::from_slice(&nonce);
+    let xnonce = chacha20poly1305::XNonce::from_slice(&nonce);
     let ciphertext = cipher
         .encrypt(
             xnonce,
-            Payload {
+            chacha20poly1305::aead::Payload {
                 msg: secret_key.as_bytes(),
                 aad: &ad,
             },
@@ -87,12 +80,15 @@ pub fn encrypt(
 
     concat[2 + 16 + 24 + 1..].copy_from_slice(&ciphertext);
 
-    let encoded = bech32::encode::<Bech32>(Hrp::parse_unchecked("ncryptsec"), concat.as_slice())
-        .expect("encoding never fails");
+    let encoded = bech32::encode::<bech32::Bech32>(
+        bech32::Hrp::parse_unchecked("ncryptsec"),
+        concat.as_slice(),
+    )
+    .expect("encoding never fails");
     Ok(encoded)
 }
 
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum DecryptError {
     #[error("failed to decode bech32")]
     Bech32(#[from] bech32::DecodeError),
@@ -116,11 +112,11 @@ pub enum DecryptError {
     InvalidKeyLength(usize),
 
     #[error("decrypted key does not belong to field")]
-    InvaidSecretKey(#[from] keys::SecretKeyError),
+    InvaidSecretKey(#[from] crate::keys::SecretKeyError),
 }
 
 /// decrypt to raw bytes
-pub fn decrypt(bech32_string: &str, password: &str) -> Result<SecretKey, DecryptError> {
+pub fn decrypt(bech32_string: &str, password: &str) -> Result<crate::SecretKey, DecryptError> {
     let (hrp, data) = bech32::decode(bech32_string)?;
 
     if hrp.as_str() != "ncryptsec" {
@@ -144,12 +140,12 @@ pub fn decrypt(bech32_string: &str, password: &str) -> Result<SecretKey, Decrypt
 
     let key = derive_scrypted_key(password, salt, log_n)?;
 
-    let cipher = XChaCha20Poly1305::new(&key.into());
-    let xnonce = XNonce::from_slice(nonce);
+    let cipher = chacha20poly1305::XChaCha20Poly1305::new(&key.into());
+    let xnonce = chacha20poly1305::XNonce::from_slice(nonce);
     let decrypted = cipher
         .decrypt(
             xnonce,
-            Payload {
+            chacha20poly1305::aead::Payload {
                 msg: encrypted_key,
                 aad: ad,
             },
@@ -160,10 +156,10 @@ pub fn decrypt(bech32_string: &str, password: &str) -> Result<SecretKey, Decrypt
         return Err(DecryptError::InvalidKeyLength(decrypted.len()));
     }
 
-    Ok(SecretKey::from_bytes(decrypted.try_into().unwrap())?)
+    Ok(crate::SecretKey::from_bytes(decrypted.try_into().unwrap())?)
 }
 
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum ScryptDerivationError {
     #[error("invalid log_n value given to scrypt: {0}")]
     InvalidLogN(u8),
@@ -180,7 +176,7 @@ pub fn derive_scrypted_key(
     // normalize password using NFKC
     let normalized_password: String = password.nfkc().collect();
 
-    let params = Params::new(
+    let params = scrypt::Params::new(
         log_n, // log_n (not N)
         8,     // r
         1,     // p
@@ -189,7 +185,7 @@ pub fn derive_scrypted_key(
     .map_err(|_| ScryptDerivationError::InvalidLogN(log_n))?;
 
     let mut key = [0u8; 32];
-    scrypt(normalized_password.as_bytes(), salt, &params, &mut key)?;
+    scrypt::scrypt(normalized_password.as_bytes(), salt, &params, &mut key)?;
 
     Ok(key)
 }
@@ -197,7 +193,6 @@ pub fn derive_scrypted_key(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keys::SecretKey;
 
     #[test]
     fn test_encrypt_and_decrypt() {

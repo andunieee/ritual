@@ -1,10 +1,4 @@
-use crate::{normalize::normalize_url, PubKey};
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
-use std::time::Duration;
-use thiserror::Error;
-
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum RelayInformationError {
     #[error("HTTP request failed: {0}")]
     Http(#[from] reqwest::Error),
@@ -19,7 +13,7 @@ pub enum RelayInformationError {
 pub type Result<T> = std::result::Result<T, RelayInformationError>;
 
 /// relay information document
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
 pub struct RelayInformationDocument {
     #[serde(skip)]
     pub url: String,
@@ -28,14 +22,14 @@ pub struct RelayInformationDocument {
     #[serde(default)]
     pub description: String,
     #[serde(default)]
-    pub pubkey: Option<PubKey>,
+    pub pubkey: Option<crate::PubKey>,
     #[serde(default)]
     pub icon: String,
 }
 
 /// fetch the metadata for a relay
 pub async fn fetch(url: &str) -> Result<RelayInformationDocument> {
-    let normalized_url = normalize_url(url)?;
+    let normalized_url = crate::normalize_url(url)?;
 
     let mut info = RelayInformationDocument {
         url: normalized_url.to_string(),
@@ -48,7 +42,9 @@ pub async fn fetch(url: &str) -> Result<RelayInformationDocument> {
         icon: String::new(),
     };
 
-    let client = Client::builder().timeout(Duration::from_secs(7)).build()?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(7))
+        .build()?;
 
     let response = client
         .get(format!("http{}", &normalized_url.as_str()[2..]))

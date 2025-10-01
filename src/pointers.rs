@@ -1,16 +1,12 @@
-use thiserror::Error;
-
-use crate::{filter::TagQuery, helpers::is_valid_relay_url, Event, Filter, Kind, PubKey, Tag, ID};
-
 /// Unified pointer enum for all Nostr pointer types
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(std::fmt::Debug, Clone, PartialEq, Eq)]
 pub enum Pointer {
     Profile(ProfilePointer),
     Event(EventPointer),
     Address(AddressPointer),
 }
 
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, std::fmt::Debug)]
 pub enum Error {
     #[error("tag should have at least 2 elements")]
     ShortTag,
@@ -20,21 +16,21 @@ pub enum Error {
 }
 
 /// Pointer to a Nostr profile
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(std::fmt::Debug, Clone, PartialEq, Eq)]
 pub struct ProfilePointer {
-    pub pubkey: PubKey,
+    pub pubkey: crate::PubKey,
     pub relays: Vec<String>,
 }
 
 impl ProfilePointer {
     /// Create a ProfilePointer from a tag
-    pub fn from_tag(tag: &Tag) -> Result<Self, Error> {
+    pub fn from_tag(tag: &crate::Tag) -> Result<Self, Error> {
         if tag.len() < 2 {
             return Err(Error::ShortTag);
         }
 
-        let pubkey: PubKey = tag[1].parse().map_err(|_| Error::Invalid)?;
-        let relays = if tag.len() > 2 && is_valid_relay_url(&tag[2]) {
+        let pubkey: crate::PubKey = tag[1].parse().map_err(|_| Error::Invalid)?;
+        let relays = if tag.len() > 2 && crate::helpers::is_valid_relay_url(&tag[2]) {
             vec![tag[2].clone()]
         } else {
             vec![]
@@ -45,23 +41,23 @@ impl ProfilePointer {
 }
 
 /// Pointer to a Nostr event
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(std::fmt::Debug, Clone, PartialEq, Eq)]
 pub struct EventPointer {
-    pub id: ID,
+    pub id: crate::ID,
     pub relays: Vec<String>,
-    pub author: Option<PubKey>,
-    pub kind: Option<Kind>,
+    pub author: Option<crate::PubKey>,
+    pub kind: Option<crate::Kind>,
 }
 
 impl EventPointer {
     /// Create an EventPointer from a tag
-    pub fn from_tag(tag: &Tag) -> Result<Self, Error> {
+    pub fn from_tag(tag: &crate::Tag) -> Result<Self, Error> {
         if tag.len() < 2 {
             return Err(Error::ShortTag);
         }
 
-        let id = ID::from_hex(&tag[1]).map_err(|_| Error::Invalid)?;
-        let relays = if tag.len() > 2 && is_valid_relay_url(&tag[2]) {
+        let id = crate::ID::from_hex(&tag[1]).map_err(|_| Error::Invalid)?;
+        let relays = if tag.len() > 2 && crate::helpers::is_valid_relay_url(&tag[2]) {
             vec![tag[2].clone()]
         } else {
             vec![]
@@ -83,17 +79,17 @@ impl EventPointer {
 }
 
 /// Pointer to a Nostr entity (addressable event)
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(std::fmt::Debug, Clone, PartialEq, Eq)]
 pub struct AddressPointer {
-    pub pubkey: PubKey,
-    pub kind: Kind,
+    pub pubkey: crate::PubKey,
+    pub kind: crate::Kind,
     pub identifier: String,
     pub relays: Vec<String>,
 }
 
 impl AddressPointer {
     /// create an AddressPointer from a tag
-    pub fn from_tag(tag: &Tag) -> Result<Self, Error> {
+    pub fn from_tag(tag: &crate::Tag) -> Result<Self, Error> {
         if tag.len() < 2 {
             return Err(Error::ShortTag);
         }
@@ -105,17 +101,17 @@ impl AddressPointer {
 
         let kind: u16 = parts[0].parse().map_err(|_| Error::Invalid)?;
 
-        let pubkey: PubKey = parts[1].parse().map_err(|_| Error::Invalid)?;
+        let pubkey: crate::PubKey = parts[1].parse().map_err(|_| Error::Invalid)?;
         let identifier = parts[2].to_string();
 
-        let relays = if tag.len() > 2 && is_valid_relay_url(&tag[2]) {
+        let relays = if tag.len() > 2 && crate::helpers::is_valid_relay_url(&tag[2]) {
             vec![tag[2].clone()]
         } else {
             vec![]
         };
 
         Ok(Self {
-            kind: Kind(kind),
+            kind: crate::Kind(kind),
             relays,
             pubkey,
             identifier,
@@ -134,7 +130,7 @@ impl Pointer {
     }
 
     /// converts the pointer to a tag that can be included in events
-    pub fn as_tag(&self) -> Tag {
+    pub fn as_tag(&self) -> crate::Tag {
         match self {
             Pointer::Profile(p) => {
                 let mut tag = vec!["p".to_string(), p.pubkey.to_hex()];
@@ -164,27 +160,30 @@ impl Pointer {
     }
 
     /// converts the pointer to a Filter that can be used to query for it
-    pub fn as_filter(&self) -> Filter {
+    pub fn as_filter(&self) -> crate::Filter {
         match self {
-            Pointer::Profile(p) => Filter {
+            Pointer::Profile(p) => crate::Filter {
                 authors: Some(vec![p.pubkey]),
                 ..Default::default()
             },
-            Pointer::Event(p) => Filter {
+            Pointer::Event(p) => crate::Filter {
                 ids: Some(vec![p.id]),
                 ..Default::default()
             },
-            Pointer::Address(p) => Filter {
+            Pointer::Address(p) => crate::Filter {
                 kinds: Some(vec![p.kind]),
                 authors: Some(vec![p.pubkey]),
-                tags: Some(vec![TagQuery("d".to_string(), vec![p.identifier.clone()])]),
+                tags: Some(vec![crate::filter::TagQuery(
+                    "d".to_string(),
+                    vec![p.identifier.clone()],
+                )]),
                 ..Default::default()
             },
         }
     }
 
     /// check if the pointer matches an event
-    pub fn matches_event(&self, event: &Event) -> bool {
+    pub fn matches_event(&self, event: &crate::Event) -> bool {
         match self {
             Pointer::Profile(_) => false,
             Pointer::Event(p) => event.id == p.id,

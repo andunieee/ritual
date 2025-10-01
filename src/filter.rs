@@ -1,21 +1,15 @@
-use crate::{Event, Kind, PubKey, Timestamp, ID};
-use foldhash::fast::FixedState;
-use serde::{
-    de::{MapAccess, Visitor},
-    Deserialize, Deserializer, Serialize, Serializer,
-};
 use std::hash::{BuildHasher, Hash, Hasher};
 
 pub const TAG_HASHER_SEED: u64 = 64;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Filter {
-    pub ids: Option<Vec<ID>>,
-    pub kinds: Option<Vec<Kind>>,
-    pub authors: Option<Vec<PubKey>>,
+    pub ids: Option<Vec<crate::ID>>,
+    pub kinds: Option<Vec<crate::Kind>>,
+    pub authors: Option<Vec<crate::PubKey>>,
     pub tags: Option<Vec<TagQuery>>,
-    pub since: Option<Timestamp>,
-    pub until: Option<Timestamp>,
+    pub since: Option<crate::Timestamp>,
+    pub until: Option<crate::Timestamp>,
     pub limit: Option<usize>,
     pub search: Option<String>,
 }
@@ -38,7 +32,8 @@ impl TagQuery {
                 match lowercase_hex::decode_to_slice(v, &mut key[1..1 + 8]) {
                     Ok(_) => Vec::from(&key[..]),
                     Err(_) => {
-                        let mut s = FixedState::with_seed(TAG_HASHER_SEED).build_hasher();
+                        let mut s =
+                            foldhash::fast::FixedState::with_seed(TAG_HASHER_SEED).build_hasher();
                         v.hash(&mut s);
                         let hash = s.finish();
                         key[1..1 + 8].copy_from_slice(&hash.to_ne_bytes());
@@ -75,10 +70,10 @@ impl TagQuery {
     }
 }
 
-impl Serialize for Filter {
+impl serde::Serialize for Filter {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: Serializer,
+        S: serde::ser::Serializer,
     {
         use serde::ser::SerializeMap;
         let mut len = [
@@ -128,20 +123,20 @@ impl Serialize for Filter {
     }
 }
 
-impl<'de> Deserialize<'de> for Filter {
+impl<'de> serde::Deserialize<'de> for Filter {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: Deserializer<'de>,
+        D: serde::de::Deserializer<'de>,
     {
         struct FilterVisitor;
-        impl<'v> Visitor<'v> for FilterVisitor {
+        impl<'v> serde::de::Visitor<'v> for FilterVisitor {
             type Value = Filter;
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
                 write!(f, "a Nostr filter object")
             }
             fn visit_map<M>(self, mut map: M) -> Result<Filter, M::Error>
             where
-                M: MapAccess<'v>,
+                M: serde::de::MapAccess<'v>,
             {
                 let mut ids = None;
                 let mut authors = None;
@@ -189,7 +184,7 @@ impl<'de> Deserialize<'de> for Filter {
 }
 
 impl Filter {
-    pub fn matches(&self, event: &Event) -> bool {
+    pub fn matches(&self, event: &crate::Event) -> bool {
         if !self.matches_except_time(event) {
             return false;
         }
@@ -209,7 +204,7 @@ impl Filter {
         true
     }
 
-    pub fn matches_except_time(&self, event: &Event) -> bool {
+    pub fn matches_except_time(&self, event: &crate::Event) -> bool {
         if let Some(ref ids) = self.ids {
             if !ids.contains(&event.id) {
                 return false;

@@ -1,8 +1,4 @@
-use serde::{de::Error, Deserialize, Deserializer, Serialize, Serializer};
-use std::{fmt, str::FromStr};
-use thiserror::Error;
-
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum IDError {
     #[error("invalid hex encoding")]
     InvalidHex(#[from] lowercase_hex::FromHexError),
@@ -11,7 +7,7 @@ pub enum IDError {
     InvalidLength(usize),
 }
 
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum SignatureError {
     #[error("invalid hex encoding")]
     InvalidHex(#[from] lowercase_hex::FromHexError),
@@ -52,38 +48,38 @@ impl ID {
     }
 }
 
-impl Serialize for ID {
+impl serde::Serialize for ID {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: Serializer,
+        S: serde::ser::Serializer,
     {
         serializer.serialize_str(&self.to_hex())
     }
 }
 
-impl<'de> Deserialize<'de> for ID {
+impl<'de> serde::Deserialize<'de> for ID {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: Deserializer<'de>,
+        D: serde::de::Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        ID::from_hex(&s).map_err(Error::custom)
+        ID::from_hex(&s).map_err(serde::de::Error::custom)
     }
 }
 
-impl fmt::Debug for ID {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Debug for ID {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "<id:{}>", self.to_hex())
     }
 }
 
-impl fmt::Display for ID {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for ID {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "<id={}>", self.to_hex())
     }
 }
 
-impl FromStr for ID {
+impl std::str::FromStr for ID {
     type Err = IDError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -103,14 +99,14 @@ impl PartialEq<ArchivedID> for ID {
     }
 }
 
-impl fmt::Debug for ArchivedID {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Debug for ArchivedID {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "<id:{} archived>", lowercase_hex::encode(self.0))
     }
 }
 
-impl fmt::Display for ArchivedID {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for ArchivedID {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "<id={} archived>", lowercase_hex::encode(self.0))
     }
 }
@@ -146,38 +142,38 @@ impl Signature {
     }
 }
 
-impl Serialize for Signature {
+impl serde::Serialize for Signature {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: Serializer,
+        S: serde::ser::Serializer,
     {
         serializer.serialize_str(&self.to_hex())
     }
 }
 
-impl<'de> Deserialize<'de> for Signature {
+impl<'de> serde::Deserialize<'de> for Signature {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: Deserializer<'de>,
+        D: serde::de::Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        Signature::from_hex(&s).map_err(Error::custom)
+        Signature::from_hex(&s).map_err(serde::de::Error::custom)
     }
 }
 
-impl fmt::Debug for Signature {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Debug for Signature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "<sig:{}>", self.to_hex())
     }
 }
 
-impl fmt::Display for Signature {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for Signature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "<sig={}>", self.to_hex())
     }
 }
 
-impl FromStr for Signature {
+impl std::str::FromStr for Signature {
     type Err = SignatureError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -188,7 +184,6 @@ impl FromStr for Signature {
 /// event kind type
 #[derive(
     Copy,
-    Error,
     Debug,
     Clone,
     PartialEq,
@@ -196,8 +191,8 @@ impl FromStr for Signature {
     PartialOrd,
     Ord,
     Default,
-    Serialize,
-    Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
     rkyv::Archive,
     rkyv::Deserialize,
     rkyv::Serialize,
@@ -226,8 +221,8 @@ impl Kind {
     }
 }
 
-impl fmt::Display for Kind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for Kind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
 }

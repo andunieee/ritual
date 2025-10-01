@@ -1,14 +1,4 @@
-use bech32::{Bech32, Hrp};
-use secp256k1::{
-    global::SECP256K1, rand, Keypair, SecretKey as Secp256k1SecretKey, XOnlyPublicKey,
-};
-use serde::{de::Error, Deserialize, Deserializer, Serialize, Serializer};
-use std::{fmt, str::FromStr};
-use thiserror::Error;
-
-use crate::codes;
-
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, std::fmt::Debug)]
 pub enum SecretKeyError {
     #[error("secret key should be at most 64-char hex, got '{0}'")]
     InvalidLength(String),
@@ -29,7 +19,7 @@ pub enum SecretKeyError {
     InvalidBech32,
 }
 
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, std::fmt::Debug)]
 pub enum PubKeyError {
     #[error("invalid hex encoding")]
     InvalidHex(#[from] lowercase_hex::FromHexError),
@@ -48,14 +38,14 @@ pub enum PubKeyError {
 }
 
 /// A 32-byte secret key
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(std::fmt::Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SecretKey(pub [u8; 32]);
 
 impl SecretKey {
     /// generate a new random secret key
     pub fn generate() -> Self {
-        let mut rng = rand::rng();
-        let keypair = secp256k1::Keypair::new(SECP256K1, &mut rng);
+        let mut rng = secp256k1::rand::rng();
+        let keypair = secp256k1::Keypair::new(secp256k1::global::SECP256K1, &mut rng);
         SecretKey(keypair.secret_bytes())
     }
 
@@ -79,15 +69,16 @@ impl SecretKey {
     }
 
     pub fn to_nsec(&self) -> String {
-        bech32::encode::<Bech32>(Hrp::parse_unchecked("nsec"), self.as_bytes())
+        bech32::encode::<bech32::Bech32>(bech32::Hrp::parse_unchecked("nsec"), self.as_bytes())
             .expect("failed to encode to nsec")
     }
 
     /// get the public key for this secret key
     pub fn pubkey(&self) -> PubKey {
-        let secret_key = Secp256k1SecretKey::from_byte_array(self.0).unwrap();
-        let keypair = Keypair::from_secret_key(SECP256K1, &secret_key);
-        let (xonly_pk, _) = XOnlyPublicKey::from_keypair(&keypair);
+        let secret_key = secp256k1::SecretKey::from_byte_array(self.0).unwrap();
+        let keypair =
+            secp256k1::Keypair::from_secret_key(secp256k1::global::SECP256K1, &secret_key);
+        let (xonly_pk, _) = secp256k1::XOnlyPublicKey::from_keypair(&keypair);
         PubKey::from_bytes_unchecked(xonly_pk.serialize())
     }
 
@@ -97,7 +88,7 @@ impl SecretKey {
     }
 }
 
-impl FromStr for SecretKey {
+impl std::str::FromStr for SecretKey {
     type Err = SecretKeyError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -121,8 +112,8 @@ impl FromStr for SecretKey {
     }
 }
 
-impl fmt::Display for SecretKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for SecretKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "sk::{}", self.to_hex())
     }
 }
@@ -159,12 +150,12 @@ impl PubKey {
     }
 
     pub fn to_npub(&self) -> String {
-        bech32::encode::<Bech32>(Hrp::parse_unchecked("npub"), self.as_bytes())
+        bech32::encode::<bech32::Bech32>(bech32::Hrp::parse_unchecked("npub"), self.as_bytes())
             .expect("failed to encode to npub")
     }
 
     pub fn to_nprofile(&self, relays: &[String]) -> String {
-        codes::encode_nprofile(self, relays)
+        crate::codes::encode_nprofile(self, relays)
     }
 
     pub fn to_ecdsa_key(&self) -> secp256k1::PublicKey {
@@ -178,38 +169,38 @@ impl PubKey {
     }
 }
 
-impl Serialize for PubKey {
+impl serde::Serialize for PubKey {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: Serializer,
+        S: serde::Serializer,
     {
         serializer.serialize_str(&self.to_hex())
     }
 }
 
-impl<'de> Deserialize<'de> for PubKey {
+impl<'de> serde::Deserialize<'de> for PubKey {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: Deserializer<'de>,
+        D: serde::Deserializer<'de>,
     {
-        let s = String::deserialize(deserializer)?;
-        s.parse().map_err(Error::custom)
+        let s = std::string::String::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
     }
 }
 
-impl fmt::Debug for PubKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Debug for PubKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "<pk:{}>", self.to_hex())
     }
 }
 
-impl fmt::Display for PubKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for PubKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "<pk={}>", self.to_hex())
     }
 }
 
-impl FromStr for PubKey {
+impl std::str::FromStr for PubKey {
     type Err = PubKeyError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {

@@ -40,9 +40,9 @@ mod tags;
 mod types;
 
 // re-export commonly used types
-pub use event::Event;
+pub use event::{ArchivedEvent, Event};
 pub use event_template::EventTemplate;
-pub use filter::Filter;
+pub use filter::{Filter, TagQuery};
 pub use keys::{PubKey, SecretKey};
 pub use metadata::Metadata;
 pub use normalize::*;
