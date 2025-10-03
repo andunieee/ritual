@@ -1,5 +1,3 @@
-
-
 /// represents nostr profile metadata from kind 0 events
 #[derive(std::fmt::Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Metadata {
@@ -54,6 +52,19 @@ impl Metadata {
             kind: crate::Kind(0),
             tags: crate::Tags::default(),
             content,
+        }
+    }
+
+    pub fn render_name(&self) -> String {
+        if let Some(name) = &self.name {
+            if name.len() < 21 {
+                name.to_owned()
+            } else {
+                format!("{}…", &name[0..20])
+            }
+        } else {
+            let npub = self.pubkey.expect("metadata must have pubkey").to_npub();
+            format!("{}…{}", &npub[0..8], &npub[npub.len() - 7..])
         }
     }
 }
