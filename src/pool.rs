@@ -2,9 +2,6 @@ use tokio_with_wasm::alias as tokio;
 
 #[derive(thiserror::Error, Debug)]
 pub enum EnsureError {
-    #[error("in penalty box, {0}s remaining")]
-    PenaltyBox(u32),
-
     #[error("URL normalization error")]
     Normalize(#[from] url::ParseError),
 
@@ -15,12 +12,6 @@ pub enum EnsureError {
 #[derive(Debug)]
 pub struct Pool {
     relays: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, crate::Relay>>>,
-    penalty_box: Option<std::sync::Arc<dashmap::DashMap<String, (u16, u32)>>>, // (failures, remaining_seconds)
-}
-
-#[derive(Default)]
-pub struct PoolOptions {
-    pub penalty_box: bool,
 }
 
 pub struct PublishResult {
@@ -36,16 +27,9 @@ pub enum Occurrence {
 }
 
 impl Pool {
-    pub fn new(opts: PoolOptions) -> Self {
-        let penalty_box = if opts.penalty_box {
-            Some(std::sync::Arc::new(dashmap::DashMap::new()))
-        } else {
-            None
-        };
-
+    pub fn new() -> Self {
         Self {
             relays: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
-            penalty_box,
         }
     }
 
@@ -67,16 +51,6 @@ impl Pool {
         let mut relay_map = self.relays.lock().await;
         if let Some(relay) = relay_map.get(normalized_url.as_str()) {
             return Ok(relay.clone());
-        }
-
-        // check penalty box
-        if let Some(ref penalty_box) = self.penalty_box {
-            if let Some(pb) = penalty_box.get(normalized_url.as_str()) {
-                let (_, remaining) = *pb;
-                if remaining > 0 {
-                    return Err(EnsureError::PenaltyBox(remaining));
-                }
-            }
         }
 
         // create new relay connection
@@ -106,18 +80,7 @@ impl Pool {
                 relay_map.insert(normalized_url.to_string(), relay.clone());
                 Ok(relay)
             }
-            Err(err) => {
-                // add to penalty box
-                if let Some(ref penalty_box) = self.penalty_box {
-                    let (failures, _) = penalty_box
-                        .get(normalized_url.as_str())
-                        .map(|v| *v)
-                        .unwrap_or((0u16, 0u32));
-                    let new_penalty = 30 + 2u32.pow(failures as u32 + 1);
-                    penalty_box.insert(normalized_url.to_string(), (failures + 1, new_penalty));
-                }
-                Err(EnsureError::Connect(err))
-            }
+            Err(err) => Err(EnsureError::Connect(err)),
         }
     }
 
@@ -270,7 +233,6 @@ impl Clone for Pool {
     fn clone(&self) -> Self {
         Self {
             relays: self.relays.clone(),
-            penalty_box: self.penalty_box.clone(),
         }
     }
 }
@@ -283,7 +245,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pool_subscribe_multiple() {
-        let pool = Pool::new(PoolOptions::default());
+        let pool = Pool::new();
 
         let urls = vec![
             "wss://nos.lol".to_string(),
@@ -322,7 +284,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pool_ensure() {
-        let pool = Pool::new(PoolOptions::default());
+        let pool = Pool::new();
 
         let relay1 = pool.ensure_relay("wss://nos.lol").await.unwrap();
         let relay2 = pool.ensure_relay("wss://nos.lol").await.unwrap();

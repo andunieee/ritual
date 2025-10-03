@@ -653,7 +653,7 @@ mod tests {
         sleep(Duration::from_millis(200)).await;
 
         // create pool and relay urls
-        let mut pool = Pool::new(PoolOptions::default());
+        let mut pool = Pool::new();
         let relay_urls = vec![
             "ws://127.0.0.1:8083".to_string(),
             "ws://127.0.0.1:8084".to_string(),

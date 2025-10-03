@@ -47,7 +47,7 @@ pub use keys::{PubKey, SecretKey};
 pub use metadata::Metadata;
 pub use normalize::*;
 pub use pointers::{AddressPointer, EventPointer, Pointer, ProfilePointer};
-pub use pool::{Occurrence, Pool, PoolOptions, PublishResult};
+pub use pool::{Occurrence, Pool, PublishResult};
 pub use relay::{CloseReason, Relay, SubscriptionOptions};
 pub use tags::{Tag, Tags};
 pub use timestamp::Timestamp;
