@@ -32,6 +32,7 @@ pub mod relay_information;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod server;
 
+mod btree;
 mod database;
 mod finalizer;
 mod normalize;

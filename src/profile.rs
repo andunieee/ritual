@@ -50,14 +50,11 @@ impl Profile {
         }
     }
 
-    pub async fn fetch_metadata(&mut self, pool: &crate::Pool) {
-        let pk = self.pubkey;
         let mut events = pool
             .query(
                 INDEXER_RELAYS,
                 crate::Filter {
                     kinds: Some(vec![10002.into()]),
-                    authors: Some(vec![pk]),
                     limit: Some(1),
                     ..Default::default()
                 },
@@ -67,7 +64,6 @@ impl Profile {
 
         let filter = crate::Filter {
             kinds: Some(vec![0.into()]),
-            authors: Some(vec![pk]),
             limit: Some(1),
             ..Default::default()
         };
