@@ -30,9 +30,10 @@ pub struct Metadata {
 }
 
 impl Metadata {
-    /// create new empty metadata
-    pub fn new() -> Self {
-        Self::default()
+    pub fn blank_from_pubkey(pk: crate::PubKey) -> Self {
+        let mut m = Self::default();
+        m.pubkey = Some(pk);
+        m
     }
 
     /// deserialize metadata from a kind 0 event's content
@@ -79,6 +80,8 @@ impl std::fmt::Display for Metadata {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use super::*;
 
     #[test]
@@ -135,12 +138,20 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_metadata() {
-        let metadata = Metadata::new();
+    fn test_blank_metadata() {
+        let metadata = Metadata::blank_from_pubkey(
+            crate::PubKey::from_str(
+                "8be4898b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f8",
+            )
+            .unwrap(),
+        );
         let template = metadata.to_event_template();
         // should serialize to empty json object
         assert_eq!(template.content, "{}");
+    }
 
+    #[test]
+    fn test_metadata_from_event() {
         // should deserialize back to empty metadata
         let event = crate::Event {
             id: crate::ID::from_hex("7ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f9").unwrap(),
@@ -148,12 +159,12 @@ mod tests {
             created_at: crate::Timestamp::now(),
             kind: crate::Kind(0),
             tags: crate::Tags::default(),
-            content: template.content,
+            content: "{\"name\":\"lllllllllll\"}".to_string(),
             sig: crate::Signature::from_hex("7ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f97ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f9").unwrap(),
         };
         let parsed = Metadata::from_event(&event).unwrap();
 
-        assert_eq!(parsed.name, None);
+        assert_eq!(parsed.name, Some("lllllllllll".to_string()));
         assert_eq!(parsed.about, None);
     }
 
