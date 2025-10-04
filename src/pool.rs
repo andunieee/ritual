@@ -44,8 +44,11 @@ impl Pool {
     }
 
     /// get or create a relay connection to the given url
-    pub async fn ensure_relay(&self, url: &str) -> Result<crate::Relay, EnsureError> {
-        let normalized_url = crate::normalize_url(url)?;
+    pub async fn ensure_relay<S>(&self, url: S) -> Result<crate::Relay, EnsureError>
+    where
+        S: AsRef<str>,
+    {
+        let normalized_url = crate::normalize_url(url.as_ref())?;
 
         // check if relay already exists
         let mut relay_map = self.relays.lock().await;
@@ -85,51 +88,61 @@ impl Pool {
     }
 
     /// publish an event to multiple relays
-    pub async fn publish_many(
+    pub async fn publish_many<S, T>(
         &mut self,
-        urls: Vec<String>,
+        urls: T,
         event: crate::Event,
-    ) -> tokio::sync::mpsc::UnboundedReceiver<PublishResult> {
+    ) -> tokio::sync::mpsc::UnboundedReceiver<PublishResult>
+    where
+        S: AsRef<str>,
+        T: AsRef<[S]>,
+    {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
-        for url in urls {
+        for url in urls.as_ref() {
             let tx = tx.clone();
             let event = event.clone();
             let pool = self.clone();
 
-            tokio::spawn(async move {
-                let result = match pool.ensure_relay(&url).await {
-                    Ok(relay) => match relay.publish(event).await {
-                        Ok(_) => PublishResult {
-                            error: None,
-                            relay_url: url.clone(),
+            if let Ok(url) = crate::normalize_url(url.as_ref()) {
+                tokio::spawn(async move {
+                    let result = match pool.ensure_relay(&url).await {
+                        Ok(relay) => match relay.publish(event).await {
+                            Ok(_) => PublishResult {
+                                error: None,
+                                relay_url: url.to_string(),
+                            },
+                            Err(err) => PublishResult {
+                                error: Some(err.to_string()),
+                                relay_url: url.to_string(),
+                            },
                         },
                         Err(err) => PublishResult {
                             error: Some(err.to_string()),
-                            relay_url: url.clone(),
+                            relay_url: url.to_string(),
                         },
-                    },
-                    Err(err) => PublishResult {
-                        error: Some(err.to_string()),
-                        relay_url: url.clone(),
-                    },
-                };
+                    };
 
-                let _ = tx.send(result);
-            });
+                    let _ = tx.send(result);
+                });
+            }
         }
 
         rx
     }
 
     /// subscribe to events from multiple relays, stop on EOSE, return a sorted list
-    pub async fn query(
+    pub async fn query<S, T>(
         &self,
-        urls: Vec<String>,
+        urls: T,
         filter: crate::Filter,
         subscription_options: crate::SubscriptionOptions,
-    ) -> Vec<crate::Event> {
-        let mut events = Vec::with_capacity(filter.limit.unwrap_or(500) * urls.len() / 2);
+    ) -> Vec<crate::Event>
+    where
+        S: AsRef<str>,
+        T: AsRef<[S]>,
+    {
+        let mut events = Vec::with_capacity(filter.limit.unwrap_or(500) * urls.as_ref().len() / 2);
 
         let mut occurrences = self.subscribe(urls, filter, subscription_options).await;
         while let Some(occ) = occurrences.recv().await {
@@ -148,19 +161,25 @@ impl Pool {
     }
 
     /// subscribe to events from multiple relays, returns a channel that will receive occurrences
-    pub async fn subscribe(
+    pub async fn subscribe<S, T>(
         &self,
-        urls: Vec<String>,
+        urls: T,
         filter: crate::Filter,
         subscription_options: crate::SubscriptionOptions,
-    ) -> tokio::sync::mpsc::Receiver<Occurrence> {
+    ) -> tokio::sync::mpsc::Receiver<Occurrence>
+    where
+        S: AsRef<str>,
+        T: AsRef<[S]>,
+    {
         let (tx, rx) = tokio::sync::mpsc::channel(256);
         let skip_ids = std::sync::Arc::new(dashmap::DashSet::new());
-        let eose_counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(urls.len()));
-        let closed_counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(urls.len()));
+        let eose_counter =
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(urls.as_ref().len()));
+        let closed_counter =
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(urls.as_ref().len()));
         let eosed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-        for url in urls {
+        for url in urls.as_ref() {
             let filter = filter.clone();
             let pool = self.clone();
             let opts = crate::SubscriptionOptions {
@@ -172,8 +191,9 @@ impl Pool {
             let closed_counter = closed_counter.clone();
             let eosed = eosed.clone();
 
+            let url_owned = url.as_ref().to_owned();
             tokio::spawn(async move {
-                if let Ok(relay) = pool.ensure_relay(&url).await {
+                if let Ok(relay) = pool.ensure_relay(&url_owned).await {
                     let mut sub = relay.subscribe(filter, opts).await;
                     while let Some(occ) = sub.recv().await {
                         match occ {

@@ -1,3 +1,18 @@
+const INDEXER_RELAYS: [&'static str; 5] = [
+    "relay.damus.io",
+    "purplepag.es",
+    "relay.primal.net",
+    "indexer.coracle.social",
+    "nos.lol",
+];
+
+const FALLBACK_METADATA_RELAYS: [&'static str; 4] = [
+    "relay.damus.io",
+    "purplepag.es",
+    "relay.primal.net",
+    "relay.nostr.band",
+];
+
 #[derive(Debug, Clone)]
 pub struct Profile {
     pub metadata: crate::Metadata,
@@ -39,13 +54,7 @@ impl Profile {
         let pk = self.pubkey;
         let mut events = pool
             .query(
-                vec![
-                    "relay.damus.io".to_string(),
-                    "purplepag.es".to_string(),
-                    "relay.primal.net".to_string(),
-                    "indexer.coracle.social".to_string(),
-                    "nos.lol".to_string(),
-                ],
+                INDEXER_RELAYS,
                 crate::Filter {
                     kinds: Some(vec![10002.into()]),
                     authors: Some(vec![pk]),
@@ -56,35 +65,31 @@ impl Profile {
             )
             .await;
 
-        let relays = if events.is_empty() {
-            vec![
-                "relay.damus.io".to_string(),
-                "purplepag.es".to_string(),
-                "relay.primal.net".to_string(),
-                "relay.nostr.band".to_string(),
-            ]
+        let filter = crate::Filter {
+            kinds: Some(vec![0.into()]),
+            authors: Some(vec![pk]),
+            limit: Some(1),
+            ..Default::default()
+        };
+
+        let mut metadata_events = if events.is_empty() {
+            pool.query(
+                FALLBACK_METADATA_RELAYS,
+                filter,
+                crate::SubscriptionOptions::default(),
+            )
+            .await
         } else {
             events.sort_by_key(|event| event.created_at);
             let crate::Event { tags, .. } = events.pop().unwrap();
-            tags.into_iter()
+            let relays: Vec<String> = tags
+                .into_iter()
                 .filter(|t| t.len() >= 2 && &t[0] == "r" && (t.len() == 2 || &t[2] == "write"))
                 .filter_map(|t| crate::normalize_url(&t[1]).ok().map(|url| url.to_string()))
-                .collect()
+                .collect();
+            pool.query(relays, filter, crate::SubscriptionOptions::default())
+                .await
         };
-
-        let mut metadata_events = pool
-            .query(
-                relays,
-                crate::Filter {
-                    kinds: Some(vec![0.into()]),
-                    authors: Some(vec![pk]),
-                    limit: Some(1),
-                    ..Default::default()
-                },
-                crate::SubscriptionOptions::default(),
-            )
-            .await;
-
         if metadata_events.is_empty() {
             return;
         }
