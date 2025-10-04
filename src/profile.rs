@@ -37,24 +37,13 @@ impl Profile {
         }
     }
 
-    pub fn render_name(&self) -> String {
-        if let Some(name) = &self.metadata.name {
-            if name.len() < 21 {
-                name.to_owned()
-            } else {
-                format!("{}…", &name[0..20])
-            }
-        } else {
-            let npub = self.pubkey.to_npub();
-            format!("{}…{}", &npub[0..8], &npub[npub.len() - 7..])
-        }
-    }
-
+    pub async fn from_metadata_fetch(pool: &crate::Pool, pk: crate::PubKey) -> Self {
         let mut events = pool
             .query(
                 INDEXER_RELAYS,
                 crate::Filter {
                     kinds: Some(vec![10002.into()]),
+                    authors: Some(vec![pk]),
                     limit: Some(1),
                     ..Default::default()
                 },
@@ -64,6 +53,7 @@ impl Profile {
 
         let filter = crate::Filter {
             kinds: Some(vec![0.into()]),
+            authors: Some(vec![pk]),
             limit: Some(1),
             ..Default::default()
         };
@@ -86,16 +76,47 @@ impl Profile {
             pool.query(relays, filter, crate::SubscriptionOptions::default())
                 .await
         };
-        if metadata_events.is_empty() {
-            return;
+
+        let (metadata, event) = if metadata_events.is_empty() {
+            (crate::Metadata::default(), None)
+        } else {
+            metadata_events.sort_by_key(|event| event.created_at);
+            let event = metadata_events.pop().unwrap();
+            let metadata = serde_json::from_str(&event.content).unwrap_or_default();
+            (metadata, Some(event))
+        };
+
+        Self {
+            pubkey: pk,
+            metadata,
+            event,
         }
+    }
 
-        metadata_events.sort_by_key(|event| event.created_at);
-        let event = metadata_events.pop().unwrap();
+    pub async fn fetch_metadata(&mut self, pool: &crate::Pool) {
+        let profile = Self::from_metadata_fetch(pool, self.pubkey).await;
 
-        if self.event.is_none() || event.created_at > self.event.as_ref().unwrap().created_at {
-            self.metadata = serde_json::from_str(&event.content).unwrap_or_default();
-            self.event = Some(event);
+        match (&self.event, &profile.event) {
+            (None, Some(_)) => *self = profile,
+            (Some(old), Some(new)) => {
+                if new.created_at > old.created_at {
+                    *self = profile;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn render_name(&self) -> String {
+        if let Some(name) = &self.metadata.name {
+            if name.len() < 21 {
+                name.to_owned()
+            } else {
+                format!("{}…", &name[0..20])
+            }
+        } else {
+            let npub = self.pubkey.to_npub();
+            format!("{}…{}", &npub[0..8], &npub[npub.len() - 7..])
         }
     }
 }
