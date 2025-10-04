@@ -20,6 +20,7 @@ pub mod message_encryption;
 pub mod metadata;
 pub mod ncryptsec1;
 pub mod pointers;
+pub mod profile;
 pub mod timestamp;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -48,6 +49,7 @@ pub use metadata::Metadata;
 pub use normalize::*;
 pub use pointers::{AddressPointer, EventPointer, Pointer, ProfilePointer};
 pub use pool::{Occurrence, Pool, PublishResult};
+pub use profile::Profile;
 pub use relay::{CloseReason, Relay, SubscriptionOptions};
 pub use tags::{Tag, Tags};
 pub use timestamp::Timestamp;
