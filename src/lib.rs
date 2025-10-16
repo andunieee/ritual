@@ -26,8 +26,6 @@ pub mod timestamp;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod addresses;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod lmdb;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod relay_information;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod server;
@@ -42,6 +40,7 @@ mod tags;
 mod types;
 
 // re-export commonly used types
+pub use btree::BTreeEventDatabase;
 pub use event::{ArchivedEvent, Event};
 pub use event_template::EventTemplate;
 pub use filter::{Filter, TagQuery};

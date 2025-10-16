@@ -1,3 +1,5 @@
+use lowercase_hex::ToHexExt;
+
 #[derive(thiserror::Error, Debug)]
 pub enum IDError {
     #[error("invalid hex encoding")]
@@ -17,7 +19,7 @@ pub enum SignatureError {
 }
 
 /// A 32-byte event ID
-#[derive(Clone, Copy, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Deserialize, rkyv::Serialize)]
+#[derive(Clone, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Deserialize, rkyv::Serialize)]
 pub struct ID(pub [u8; 32]);
 
 impl ID {
@@ -29,9 +31,9 @@ impl ID {
         &self.0
     }
 
-    pub fn as_u64_lossy(&self) -> u64 {
+    pub fn short(&self) -> ShortID {
         let bytes: [u8; 8] = self.0[8..16].try_into().unwrap();
-        u64::from_ne_bytes(bytes)
+        ShortID(u64::from_ne_bytes(bytes))
     }
 
     pub fn from_hex(hex_str: &str) -> Result<Self, IDError> {
@@ -87,6 +89,23 @@ impl std::str::FromStr for ID {
     }
 }
 
+// A 8-byte event ID (lossy fragment of the full ID)
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ShortID(pub u64);
+
+impl std::fmt::Display for ShortID {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<id={}… (short)>", self.0.to_be_bytes().encode_hex())
+    }
+}
+
+impl ArchivedID {
+    pub fn short(&self) -> ShortID {
+        let bytes: [u8; 8] = self.0[8..16].try_into().unwrap();
+        ShortID(u64::from_ne_bytes(bytes))
+    }
+}
+
 impl PartialEq<ArchivedID> for ArchivedID {
     fn eq(&self, other: &ArchivedID) -> bool {
         self.0 == other.0
@@ -112,7 +131,7 @@ impl std::fmt::Display for ArchivedID {
 }
 
 /// A 64-byte signature
-#[derive(Clone, Copy, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Deserialize, rkyv::Serialize)]
+#[derive(Clone, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Deserialize, rkyv::Serialize)]
 pub struct Signature(pub [u8; 64]);
 
 impl Signature {

@@ -1,3 +1,5 @@
+use lowercase_hex::ToHexExt;
+
 #[derive(thiserror::Error, std::fmt::Debug)]
 pub enum SecretKeyError {
     #[error("secret key should be at most 64-char hex, got '{0}'")]
@@ -38,7 +40,7 @@ pub enum PubKeyError {
 }
 
 /// A 32-byte secret key
-#[derive(std::fmt::Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SecretKey(pub [u8; 32]);
 
 impl SecretKey {
@@ -114,12 +116,12 @@ impl std::str::FromStr for SecretKey {
 
 impl std::fmt::Display for SecretKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "sk::{}", self.to_hex())
+        write!(f, "<sk={}>", self.to_hex())
     }
 }
 
 /// a 32-byte public key
-#[derive(Clone, Copy, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Deserialize, rkyv::Serialize)]
+#[derive(Clone, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Deserialize, rkyv::Serialize)]
 pub struct PubKey(pub [u8; 32]);
 
 impl PubKey {
@@ -140,9 +142,9 @@ impl PubKey {
         &self.0
     }
 
-    pub fn as_u64_lossy(&self) -> u64 {
+    pub fn short(&self) -> ShortPubKey {
         let bytes: [u8; 8] = self.0[8..16].try_into().unwrap();
-        u64::from_ne_bytes(bytes)
+        ShortPubKey(u64::from_ne_bytes(bytes))
     }
 
     pub fn to_hex(&self) -> String {
@@ -222,5 +224,14 @@ impl std::str::FromStr for PubKey {
         } else {
             Err(PubKeyError::UnknownFormat)
         }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct ShortPubKey(pub u64);
+
+impl std::fmt::Display for ShortPubKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<pk={}… (short)>", self.0.to_be_bytes().encode_hex())
     }
 }

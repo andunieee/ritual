@@ -29,11 +29,11 @@ impl Profile {
         }
     }
 
-    pub fn from_event(event: &crate::Event) -> Self {
+    pub fn from_event(event: crate::Event) -> Self {
         Self {
             metadata: serde_json::from_str(&event.content).unwrap_or_default(),
-            pubkey: event.pubkey,
-            event: Some(event.clone()),
+            pubkey: event.pubkey.clone(),
+            event: Some(event),
         }
     }
 
@@ -43,7 +43,7 @@ impl Profile {
                 INDEXER_RELAYS,
                 crate::Filter {
                     kinds: Some(vec![10002.into()]),
-                    authors: Some(vec![pk]),
+                    authors: Some(vec![pk.clone()]),
                     limit: Some(1),
                     ..Default::default()
                 },
@@ -53,7 +53,7 @@ impl Profile {
 
         let filter = crate::Filter {
             kinds: Some(vec![0.into()]),
-            authors: Some(vec![pk]),
+            authors: Some(vec![pk.clone()]),
             limit: Some(1),
             ..Default::default()
         };
@@ -94,7 +94,7 @@ impl Profile {
     }
 
     pub async fn fetch_metadata(&mut self, pool: &crate::Pool) {
-        let profile = Self::from_metadata_fetch(pool, self.pubkey).await;
+        let profile = Self::from_metadata_fetch(pool, self.pubkey.clone()).await;
 
         match (&self.event, &profile.event) {
             (None, Some(_)) => *self = profile,
@@ -150,7 +150,7 @@ mod tests {
             content: json.to_string(),
             sig: crate::Signature::from_hex("7ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f97ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f9").unwrap(),
         };
-        let metadata = Profile::from_event(&event);
+        let metadata = Profile::from_event(event);
 
         assert_eq!(metadata.metadata.name, Some("alice".to_string()));
         assert_eq!(metadata.metadata.about, Some("developer".to_string()));
@@ -186,7 +186,7 @@ mod tests {
             content: template.content,
             sig: crate::Signature::from_hex("7ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f97ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f9").unwrap(),
         };
-        let parsed = Profile::from_event(&event);
+        let parsed = Profile::from_event(event);
 
         assert_eq!(parsed.metadata.name, metadata.name);
         assert_eq!(parsed.metadata.about, metadata.about);
@@ -221,7 +221,7 @@ mod tests {
             content: "{\"name\":\"lllllllllll\"}".to_string(),
             sig: crate::Signature::from_hex("7ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f97ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f9").unwrap(),
         };
-        let parsed = Profile::from_event(&event);
+        let parsed = Profile::from_event(event);
 
         assert_eq!(parsed.pubkey, pk);
         assert_eq!(parsed.metadata.name, Some("lllllllllll".to_string()));
@@ -239,7 +239,7 @@ mod tests {
             content: "not json at all".to_string(),
             sig: crate::Signature::from_hex("7ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f97ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f9").unwrap(),
         };
-        let profile = Profile::from_event(&event);
+        let profile = Profile::from_event(event);
         assert_eq!(
             serde_json::to_string(&profile.metadata).unwrap(),
             "{}".to_string()

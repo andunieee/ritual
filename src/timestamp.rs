@@ -25,6 +25,10 @@ impl Timestamp {
                 .as_secs() as u32,
         )
     }
+
+    pub fn invert(&self) -> u32 {
+        std::u32::MAX - self.0
+    }
 }
 
 impl std::fmt::Display for Timestamp {

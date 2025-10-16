@@ -232,21 +232,16 @@ impl BunkerClient {
     }
 
     pub async fn get_public_key(&self) -> Result<crate::PubKey, GetPublicKeyError> {
-        {
-            let guard = self.get_pubkey_response.lock().await;
-            if let Some(pk) = *guard {
-                return Ok(pk);
-            }
+        let mut guard = self.get_pubkey_response.lock().await;
+
+        if let Some(pk) = guard.as_ref() {
+            return Ok(pk.to_owned());
         }
 
         let resp = self.rpc("get_public_key", vec![]).await?;
         let pk: crate::PubKey = resp.parse()?;
 
-        {
-            let mut guard = self.get_pubkey_response.lock().await;
-            *guard = Some(pk);
-        }
-
+        *guard = Some(pk.clone());
         Ok(pk)
     }
 

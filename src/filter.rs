@@ -1,7 +1,3 @@
-use std::hash::{BuildHasher, Hash, Hasher};
-
-pub const TAG_HASHER_SEED: u64 = 64;
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Filter {
     pub ids: Option<Vec<crate::ID>>,
@@ -18,32 +14,6 @@ pub struct Filter {
 pub struct TagQuery(pub String, pub Vec<String>);
 
 impl TagQuery {
-    pub(crate) fn to_sub_queries(&self, start_ts: &[u8]) -> Vec<Vec<u8>> {
-        self.1
-            .iter()
-            .map(|v| {
-                let mut key = [0u8; 1 + 8 + 4];
-                key[1 + 8..].copy_from_slice(&start_ts);
-
-                if self.0.len() > 0 {
-                    key[0] = self.0.as_bytes()[0];
-                }
-
-                match lowercase_hex::decode_to_slice(v, &mut key[1..1 + 8]) {
-                    Ok(_) => Vec::from(&key[..]),
-                    Err(_) => {
-                        let mut s =
-                            foldhash::fast::FixedState::with_seed(TAG_HASHER_SEED).build_hasher();
-                        v.hash(&mut s);
-                        let hash = s.finish();
-                        key[1..1 + 8].copy_from_slice(&hash.to_ne_bytes());
-                        Vec::from(&key[..])
-                    }
-                }
-            })
-            .collect()
-    }
-
     pub fn key(&self) -> &str {
         self.0.as_str()
     }
@@ -249,7 +219,7 @@ impl Filter {
         }
 
         // if both authors and kinds are specified
-        if let (Some(ref authors), Some(ref kinds)) = (&self.authors, &self.kinds) {
+        if let (Some(authors), Some(kinds)) = (&self.authors, &self.kinds) {
             // check if all kinds are replaceable
             let all_are_replaceable = kinds.iter().all(|k| k.is_replaceable());
             if all_are_replaceable {
@@ -257,7 +227,7 @@ impl Filter {
             }
 
             // check if we have d tags and all kinds are addressable
-            if let Some(ref tags) = &self.tags {
+            if let Some(tags) = &self.tags {
                 if let Some(d_tags) = tags.iter().find(|tag| tag.0 == "d") {
                     let all_are_addressable = kinds.iter().all(|k| k.is_addressable());
                     if all_are_addressable {
