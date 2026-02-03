@@ -93,9 +93,7 @@ pub async fn fetch(fullname: &str) -> Result<(WellKnownResponse, String)> {
     let response = client.get(&url).send().await?;
 
     if !response.status().is_success() {
-        return Err(AddressError::Http(reqwest::Error::from(
-            response.error_for_status().unwrap_err(),
-        )));
+        return Err(AddressError::Http(response.error_for_status().unwrap_err()));
     }
 
     let result: WellKnownResponse = response.json().await?;
@@ -105,8 +103,8 @@ pub async fn fetch(fullname: &str) -> Result<(WellKnownResponse, String)> {
 
 /// normalize a identifier
 pub fn normalize_identifier(fullname: &str) -> String {
-    if fullname.starts_with("_@") {
-        fullname[2..].to_string()
+    if let Some(stripped) = fullname.strip_prefix("_@") {
+        stripped.to_string()
     } else {
         fullname.to_string()
     }

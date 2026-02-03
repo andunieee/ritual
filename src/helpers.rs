@@ -54,7 +54,7 @@ pub fn extract_key_from_sub_id(json_str: &str) -> Option<SubscriptionKey> {
     let remaining = &remaining[quote_start + 1..];
 
     // take the 8 hex bytes that will NECESSARILY be here because we created this
-    Some(key_from_sub_id(&remaining))
+    Some(key_from_sub_id(remaining))
 }
 
 pub fn key_from_sub_id(sub_id: &str) -> SubscriptionKey {
@@ -214,19 +214,15 @@ mod tests {
     fn bench_get_id_serde(b: &mut Bencher) {
         let eventj = r#"{"kind":1,"pubkey":"37a4aef1f8423ca076e4b7d99a8cabff40ddb8231f2a9f01081f15d7fa65c1ba","created_at":1750711742,"tags":[],"content":"hello world","sig":"a1ecbf1636f5e752f1b918a86b065a8031b1387f0785f0ca19b84cc155d7937fece1f3ae53b79d347fbce5555a0f2da8db96334cab154f8d92300f8c1936710c","id":"9429b2e11640bfd86971f0d9f7435199b57e121a363213df11d5b426807e49f5"}"#;
         b.iter(|| {
-            let id = serde_json::from_str::<crate::Event>(eventj)
+            serde_json::from_str::<crate::Event>(eventj)
                 .map(|evt| evt.id)
-                .ok();
-            id
+                .ok()
         });
     }
 
     #[bench]
     fn bench_get_id_manual(b: &mut Bencher) {
         let eventj = r#"{"kind":1,"pubkey":"37a4aef1f8423ca076e4b7d99a8cabff40ddb8231f2a9f01081f15d7fa65c1ba","created_at":1750711742,"tags":[],"content":"hello world","sig":"a1ecbf1636f5e752f1b918a86b065a8031b1387f0785f0ca19b84cc155d7937fece1f3ae53b79d347fbce5555a0f2da8db96334cab154f8d92300f8c1936710c","id":"9429b2e11640bfd86971f0d9f7435199b57e121a363213df11d5b426807e49f5"}"#;
-        b.iter(|| {
-            let id = extract_event_id(eventj);
-            id
-        });
+        b.iter(|| extract_event_id(eventj));
     }
 }

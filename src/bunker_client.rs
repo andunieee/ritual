@@ -156,8 +156,8 @@ impl BunkerClient {
                                 if let Ok(plain) = crate::message_encryption::decrypt(
                                     &event.content,
                                     &conversation_key,
-                                ) {
-                                    if let Ok(resp) = serde_json::from_str::<Response>(&plain) {
+                                )
+                                    && let Ok(resp) = serde_json::from_str::<Response>(&plain) {
                                         let rk = match lowercase_hex::decode_to_array::<&str, 8>(
                                             &resp.id,
                                         ) {
@@ -167,15 +167,14 @@ impl BunkerClient {
                                             Err(_) => continue,
                                         };
 
-                                        if resp.result.as_deref() == Some("auth_url") {
-                                            if let Some(auth_url) = &resp.error {
+                                        if resp.result.as_deref() == Some("auth_url")
+                                            && let Some(auth_url) = &resp.error {
                                                 {
                                                     if let Some(on_auth_fn) = on_auth_url.as_ref() {
                                                         on_auth_fn.0(auth_url);
                                                     }
                                                 }
                                             }
-                                        }
 
                                         if let Some(dispatcher) =
                                             awaiting_responses.lock().await.remove(rk)
@@ -183,7 +182,6 @@ impl BunkerClient {
                                             let _ = dispatcher.send(resp);
                                         }
                                     }
-                                }
                             }
                         }
                     }
@@ -241,7 +239,7 @@ impl BunkerClient {
         let resp = self.rpc("get_public_key", vec![]).await?;
         let pk: crate::PubKey = resp.parse()?;
 
-        *guard = Some(pk.clone());
+        *guard = Some(pk);
         Ok(pk)
     }
 
@@ -328,18 +326,16 @@ impl BunkerClient {
             created_at: crate::Timestamp::now(),
             kind: crate::Kind(24133),
             tags: crate::Tags(vec![vec!["p".to_string(), self.target.to_hex()]]),
-            ..Default::default()
         }
         .finalize(&self.client_secret_key);
 
         // publish
         let mut sent = false;
         for url in self.relays.iter() {
-            if let Some(relay) = self.pool.get_relay(url).await {
-                if relay.publish(event.clone()).await.is_ok() {
+            if let Some(relay) = self.pool.get_relay(url).await
+                && relay.publish(event.clone()).await.is_ok() {
                     sent = true;
                 }
-            }
         }
 
         if !sent {

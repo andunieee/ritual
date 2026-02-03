@@ -29,7 +29,7 @@ impl Event {
 
         let signature = secp256k1::schnorr::Signature::from_byte_array(self.sig.0);
 
-        let hash = sha2::Sha256::digest(&self.serialize());
+        let hash = sha2::Sha256::digest(self.serialize());
         secp256k1::SECP256K1
             .verify_schnorr(&signature, &hash, &pubkey)
             .is_ok()

@@ -27,7 +27,7 @@ impl Timestamp {
     }
 
     pub fn invert(&self) -> u32 {
-        std::u32::MAX - self.0
+        u32::MAX - self.0
     }
 }
 

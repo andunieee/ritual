@@ -316,8 +316,8 @@ impl<'de> serde::Deserialize<'de> for Envelope {
                                         )
                                     })? as u32;
                                 }
-                                if let Some(hll) = count_result.get("hll") {
-                                    if let Some(hll_str) = hll.as_str() {
+                                if let Some(hll) = count_result.get("hll")
+                                    && let Some(hll_str) = hll.as_str() {
                                         if hll_str.len() != 512 {
                                             return Err(serde::de::Error::custom(
                                                 EnvelopeError::InvalidHllLength.to_string(),
@@ -325,7 +325,6 @@ impl<'de> serde::Deserialize<'de> for Envelope {
                                         }
                                         hyperloglog = lowercase_hex::decode(hll_str).ok();
                                     }
-                                }
 
                                 Ok(Envelope::CountReply {
                                     subscription_id,
@@ -343,9 +342,9 @@ impl<'de> serde::Deserialize<'de> for Envelope {
                                         filter,
                                     })
                                 } else {
-                                    return Err(serde::de::Error::custom(
+                                    Err(serde::de::Error::custom(
                                         EnvelopeError::InvalidCount.to_string(),
-                                    ));
+                                    ))
                                 }
                             }
                         }
@@ -731,7 +730,7 @@ mod tests {
                     )
                     .unwrap()
                 );
-                assert_eq!(ok, true);
+                assert!(ok);
                 assert_eq!(reason, "");
             }
             _ => panic!("expected Ok envelope"),
@@ -762,7 +761,7 @@ mod tests {
                     )
                     .unwrap()
                 );
-                assert_eq!(ok, false);
+                assert!(!ok);
                 assert_eq!(reason, "invalid: signature verification failed");
             }
             _ => panic!("expected Ok envelope"),

@@ -41,6 +41,7 @@ mod types;
 
 // re-export commonly used types
 pub use btree::BTreeEventDatabase;
+pub use database::EventDatabase;
 pub use event::{ArchivedEvent, Event};
 pub use event_template::EventTemplate;
 pub use filter::{Filter, TagQuery};

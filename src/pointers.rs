@@ -163,16 +163,16 @@ impl Pointer {
     pub fn as_filter(&self) -> crate::Filter {
         match self {
             Pointer::Profile(p) => crate::Filter {
-                authors: Some(vec![p.pubkey.clone()]),
+                authors: Some(vec![p.pubkey]),
                 ..Default::default()
             },
             Pointer::Event(p) => crate::Filter {
-                ids: Some(vec![p.id.clone()]),
+                ids: Some(vec![p.id]),
                 ..Default::default()
             },
             Pointer::Address(p) => crate::Filter {
                 kinds: Some(vec![p.kind]),
-                authors: Some(vec![p.pubkey.clone()]),
+                authors: Some(vec![p.pubkey]),
                 tags: Some(vec![crate::filter::TagQuery(
                     "d".to_string(),
                     vec![p.identifier.clone()],

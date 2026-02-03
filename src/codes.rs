@@ -410,7 +410,7 @@ mod tests {
             "nsec1lcs0xwqmjszwng66ldym8hq8pfxurl7nyx4c704wj7dtjmmqrcaqazp4dg"
         );
 
-        let result = decode(&nsec).unwrap();
+        let result = decode(nsec).unwrap();
         if let DecodeResult::SecretKey(decoded_sk) = result {
             assert_eq!(decoded_sk.as_bytes(), sk.as_bytes());
         } else {

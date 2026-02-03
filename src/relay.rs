@@ -71,7 +71,7 @@ impl std::fmt::Debug for SubscriptionOptions {
 #[derive(Debug)]
 pub enum Occurrence {
     Event(Event),
-    EOSE,
+    Eose,
     Close(CloseReason),
 }
 
@@ -313,7 +313,7 @@ impl Relay {
                         }
                         Err(err) => {
                             if let Some(on_close) = on_close.take() {
-                                let _ = on_close.send(format!("error: {}", err.to_string()));
+                                let _ = on_close.send(format!("error: {}", err));
                             }
                             for (_, sub) in sub_sender_map.lock().await.drain() {
                                 let _ = sub
@@ -346,11 +346,11 @@ impl Relay {
 
     pub async fn publish(&self, event: Event) -> Result<(), PublishError> {
         let (tx, rx) = oneshot::channel();
-        self.ok_callbacks.insert(event.id.clone(), tx);
+        self.ok_callbacks.insert(event.id, tx);
 
         let msg = serde_json::json!(["EVENT", event]);
 
-        let _ = self
+        self
             .write_queue
             .send(msg.to_string())
             .await
@@ -358,8 +358,7 @@ impl Relay {
 
         rx.await
             .map_err(|_| PublishError::Channel)
-            .map(|r| r.map_err(|err| PublishError::NotOK(err)))
-            .flatten()
+            .and_then(|r| r.map_err(PublishError::NotOK))
     }
 
     /// subscribe to events matching a filter
@@ -447,15 +446,14 @@ async fn handle_nostr_envelope(
     match extract_key_from_sub_id(&message) {
         None => {}
         Some(sub_key) => {
-            if let Some(skip_ids) = id_skippers_map.lock().await.get(sub_key) {
-                if let Some(id) = extract_event_id(&message) {
+            if let Some(skip_ids) = id_skippers_map.lock().await.get(sub_key)
+                && let Some(id) = extract_event_id(&message) {
                     let wasnt = skip_ids.insert(id);
                     if !wasnt {
                         // this id was already known
                         return;
                     }
                 }
-            }
         }
     }
 
@@ -486,7 +484,7 @@ async fn handle_nostr_envelope(
                 occfilter.filter.until = None;
 
                 // and we dispatch this to the listener
-                let _ = occfilter.ocurrences_sender.send(Occurrence::EOSE).await;
+                let _ = occfilter.ocurrences_sender.send(Occurrence::Eose).await;
             };
         }
         Ok(Envelope::Ok {
@@ -518,10 +516,10 @@ async fn handle_nostr_envelope(
         }) => {
             let key = key_from_sub_id(&subscription_id);
             let mut ssm = sub_sender_map.lock().await;
-            if let Some(sub) = ssm.get_mut(key) {
-                if reason.starts_with("auth-required:") {
-                    if let Some(challenge) = relay_challenge.read().await.clone() {
-                        if let Some(finalizer) = sub.auth_automatically.take() {
+            if let Some(sub) = ssm.get_mut(key)
+                && reason.starts_with("auth-required:")
+                    && let Some(challenge) = relay_challenge.read().await.clone()
+                        && let Some(finalizer) = sub.auth_automatically.take() {
                             // instead of ending here after a CLOSED we will perform AUTH
                             let result = finalizer.finalize_event(EventTemplate {
                                 created_at: Timestamp::now(),
@@ -535,7 +533,7 @@ async fn handle_nostr_envelope(
                             if let Ok(auth_event) = result.await {
                                 // send the AUTH message and wait for an OK
                                 let (tx, rx) = oneshot::channel();
-                                ok_callbacks.insert(auth_event.id.clone(), tx);
+                                ok_callbacks.insert(auth_event.id, tx);
                                 let _ = write_queue
                                     .send(
                                         serde_json::to_string(&Envelope::AuthEvent {
@@ -545,12 +543,12 @@ async fn handle_nostr_envelope(
                                     )
                                     .await;
 
-                                if let Ok(_) = rx.await {
+                                if (rx.await).is_ok() {
                                     // then restart the subscription
                                     let _ = write_queue
                                         .send(
                                             serde_json::to_string(&Envelope::Req {
-                                                subscription_id: subscription_id,
+                                                subscription_id,
                                                 filters: vec![sub.filter.clone()],
                                             })
                                             .unwrap(),
@@ -564,9 +562,6 @@ async fn handle_nostr_envelope(
                                 }
                             };
                         }
-                    }
-                }
-            }
 
             // now that we checked for that circumstance and didn't hit the `continue`
             // we can proceed to remove this subscription and issue the final `Close`
@@ -630,7 +625,7 @@ mod tests {
                 Occurrence::Event(_) => {
                     pre_eose_count += 1;
                 }
-                Occurrence::EOSE => {
+                Occurrence::Eose => {
                     break;
                 }
                 Occurrence::Close(_) => {

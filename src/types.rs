@@ -19,7 +19,7 @@ pub enum SignatureError {
 }
 
 /// A 32-byte event ID
-#[derive(Clone, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Deserialize, rkyv::Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Deserialize, rkyv::Serialize)]
 pub struct ID(pub [u8; 32]);
 
 impl ID {

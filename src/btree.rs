@@ -1,13 +1,16 @@
 use std::collections::BTreeMap;
-use std::sync::{Arc, RwLock, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
-use crate::database::{Cursor, DatabaseError, EventDatabase, Index, IndexKey, ReadTransaction, Result, WriteTransaction};
+use crate::database::{
+    Cursor, DatabaseError, EventDatabase, Index, IndexKey, ReadTransaction, Result,
+    WriteTransaction,
+};
 
 /// btree-based in-memory event database
 pub struct BTreeEventDatabase {
     // main event storage: shortid -> archived event bytes (using Arc to safely return references)
     events: Arc<RwLock<BTreeMap<u64, Arc<Vec<u8>>>>>,
-    
+
     // indexes: binary key -> shortid
     index_timestamp: Arc<RwLock<BTreeMap<Vec<u8>, u64>>>,
     index_pubkey: Arc<RwLock<BTreeMap<Vec<u8>, u64>>>,
@@ -92,20 +95,22 @@ impl<'t> ReadTransaction<'t> for BTreeReadTransaction {
     fn get_event(&self, id: crate::ShortID) -> Result<&'t crate::ArchivedEvent> {
         // get the Arc<Vec<u8>> from the map
         let events = self.events.read().unwrap();
-        let bytes_arc = events.get(&id.0).ok_or(DatabaseError::EventNotFound)?.clone();
+        let bytes_arc = events
+            .get(&id.0)
+            .ok_or(DatabaseError::EventNotFound)?
+            .clone();
         drop(events);
-        
+
         // keep the Arc alive by storing it in the transaction
         self.leaked_refs.lock().unwrap().push(bytes_arc.clone());
-        
+
         // convert Arc to raw pointer to get a reference with lifetime 't
         let ptr = Arc::into_raw(bytes_arc);
         let bytes_ref = unsafe { &*ptr };
-        
-        let archived = unsafe {
-            rkyv::access_unchecked::<crate::ArchivedEvent>(bytes_ref.as_slice())
-        };
-        
+
+        let archived =
+            unsafe { rkyv::access_unchecked::<crate::ArchivedEvent>(bytes_ref.as_slice()) };
+
         Ok(archived)
     }
 
@@ -172,20 +177,22 @@ impl<'t> ReadTransaction<'t> for BTreeWriteTransaction {
     fn get_event(&self, id: crate::ShortID) -> Result<&'t crate::ArchivedEvent> {
         // get the Arc<Vec<u8>> from the map
         let events = self.events.read().unwrap();
-        let bytes_arc = events.get(&id.0).ok_or(DatabaseError::EventNotFound)?.clone();
+        let bytes_arc = events
+            .get(&id.0)
+            .ok_or(DatabaseError::EventNotFound)?
+            .clone();
         drop(events);
-        
+
         // keep the Arc alive by storing it in the transaction
         self.leaked_refs.lock().unwrap().push(bytes_arc.clone());
-        
+
         // convert Arc to raw pointer to get a reference with lifetime 't
         let ptr = Arc::into_raw(bytes_arc);
         let bytes_ref = unsafe { &*ptr };
-        
-        let archived = unsafe {
-            rkyv::access_unchecked::<crate::ArchivedEvent>(bytes_ref.as_slice())
-        };
-        
+
+        let archived =
+            unsafe { rkyv::access_unchecked::<crate::ArchivedEvent>(bytes_ref.as_slice()) };
+
         Ok(archived)
     }
 
@@ -216,11 +223,14 @@ impl<'t> WriteTransaction<'t> for BTreeWriteTransaction {
     fn put_event(&mut self, event: &crate::Event) -> Result<()> {
         let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(event)?;
         let short_id = event.id.short().0;
-        
+
         // store the current event id for use in put_key calls
         *self.current_event_id.lock().unwrap() = Some(short_id);
-        
-        self.events.write().unwrap().insert(short_id, Arc::new(bytes.to_vec()));
+
+        self.events
+            .write()
+            .unwrap()
+            .insert(short_id, Arc::new(bytes.to_vec()));
         Ok(())
     }
 
@@ -240,13 +250,15 @@ impl<'t> WriteTransaction<'t> for BTreeWriteTransaction {
         };
 
         // get the current event's short_id that was set in put_event
-        let short_id = self.current_event_id.lock().unwrap()
-            .ok_or_else(|| DatabaseError::InvalidFilter(
-                "put_key called without a current event".to_string()
-            ))?;
+        let short_id = self.current_event_id.lock().unwrap().ok_or_else(|| {
+            DatabaseError::InvalidFilter("put_key called without a current event".to_string())
+        })?;
 
         // insert the index entry: index_key -> event_short_id
-        index_map.write().unwrap().insert(index_key.key.to_vec(), short_id);
+        index_map
+            .write()
+            .unwrap()
+            .insert(index_key.key.to_vec(), short_id);
         Ok(())
     }
 
@@ -289,7 +301,7 @@ impl<'t> Cursor<'t> for BTreeCursor {
         // determine the range to iterate
         // we need to use a different approach to avoid collecting into a Vec
         let mut keys_to_process: Vec<(Vec<u8>, u64)> = Vec::with_capacity(PULL_BATCH_SIZE);
-        
+
         if let Some(ref last) = self.last_key {
             // subsequent pulls: exclude the last key we already processed
             for (key, &short_id) in map.range::<Vec<u8>, _>(..last.clone()).rev() {
@@ -307,7 +319,7 @@ impl<'t> Cursor<'t> for BTreeCursor {
                 keys_to_process.push((key.clone(), short_id));
             }
         }
-        
+
         for (key, short_id) in keys_to_process {
             // extract timestamp from the key (last 4 bytes)
             let key_len = key.len();
@@ -316,7 +328,7 @@ impl<'t> Cursor<'t> for BTreeCursor {
             }
 
             let ts_bytes: [u8; 4] = key[key_len - 4..].try_into().unwrap();
-            
+
             // timestamps are stored inverted and in big-endian
             let inverted_ts = u32::from_be_bytes(ts_bytes);
             let actual_ts = u32::MAX - inverted_ts;
@@ -328,14 +340,14 @@ impl<'t> Cursor<'t> for BTreeCursor {
 
             self.pulled_ids.push(crate::ShortID(short_id));
             self.last_read_ts = actual_ts;
-            
+
             if count == 0 {
                 self.first_pulled_ts = actual_ts;
             }
 
             // save this key for next iteration
             self.last_key = Some(key.clone());
-            
+
             count += 1;
         }
 
@@ -366,5 +378,105 @@ impl<'t> Cursor<'t> for BTreeCursor {
 
     fn pop_front_pulled_id(&mut self) -> crate::ShortID {
         self.pulled_ids.remove(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        BTreeEventDatabase, Event, EventDatabase, Filter, ID, Kind, Signature, Tags, Timestamp,
+        database::ReadTransaction,
+    };
+
+    #[test]
+    fn test_btree_database_basic_operations() {
+        let db = BTreeEventDatabase::new();
+
+        // create a test event with a valid public key
+        let event = Event {
+            id: ID::from_hex("0000000000000000000000000000000000000000000000000000000000000000")
+                .unwrap(),
+            pubkey: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+                .parse()
+                .unwrap(),
+            created_at: Timestamp(1234567890),
+            kind: Kind(1),
+            tags: Tags::default(),
+            content: "test event".to_string(),
+            sig: Signature::from_bytes([0u8; 64]),
+        };
+
+        // test saving and retrieving event
+        db.save_event(&event).unwrap();
+
+        let mut results = db.query_events(vec![Filter::default()]);
+
+        let retrieved = results.next().unwrap();
+        assert_eq!(event.id, retrieved.id);
+
+        // test has_event
+        assert!(db.begin_read_txn().has_event(event.id.short()));
+
+        // test delete
+        db.delete_event(event.id.short()).unwrap();
+        assert!(!db.begin_read_txn().has_event(event.id.short()));
+    }
+
+    #[test]
+    fn test_btree_database_query_by_author() {
+        let db = BTreeEventDatabase::new();
+
+        let event = Event {
+            id: ID::from_hex("1111111111111111111111111111111111111111111111111111111111111111")
+                .unwrap(),
+            pubkey: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+                .parse()
+                .unwrap(),
+            created_at: Timestamp(1234567890),
+            kind: Kind(1),
+            tags: Tags::default(),
+            content: "test event by author".to_string(),
+            sig: Signature::from_bytes([0u8; 64]),
+        };
+
+        db.save_event(&event).unwrap();
+
+        let filter = Filter {
+            authors: Some(vec![event.pubkey]),
+            ..Default::default()
+        };
+
+        let mut results = db.query_events(vec![filter]);
+        let retrieved = results.next().unwrap();
+        assert_eq!(event.pubkey.0, retrieved.pubkey.0);
+    }
+
+    #[test]
+    fn test_btree_database_query_by_kind() {
+        let db = BTreeEventDatabase::new();
+
+        let event = Event {
+            id: ID::from_hex("2222222222222222222222222222222222222222222222222222222222222222")
+                .unwrap(),
+            pubkey: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+                .parse()
+                .unwrap(),
+            created_at: Timestamp(1234567890),
+            kind: Kind(5),
+            tags: Tags::default(),
+            content: "test event with specific kind".to_string(),
+            sig: Signature::from_bytes([0u8; 64]),
+        };
+
+        db.save_event(&event).unwrap();
+
+        let filter = Filter {
+            kinds: Some(vec![event.kind]),
+            ..Default::default()
+        };
+
+        let mut results = db.query_events(vec![filter]);
+        let retrieved = results.next().unwrap();
+        assert_eq!(event.kind.0, retrieved.kind.0);
     }
 }

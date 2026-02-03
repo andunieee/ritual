@@ -1,4 +1,4 @@
-const INDEXER_RELAYS: [&'static str; 5] = [
+const INDEXER_RELAYS: [&str; 5] = [
     "relay.damus.io",
     "purplepag.es",
     "relay.primal.net",
@@ -6,7 +6,7 @@ const INDEXER_RELAYS: [&'static str; 5] = [
     "nos.lol",
 ];
 
-const FALLBACK_METADATA_RELAYS: [&'static str; 4] = [
+const FALLBACK_METADATA_RELAYS: [&str; 4] = [
     "relay.damus.io",
     "purplepag.es",
     "relay.primal.net",
@@ -32,7 +32,7 @@ impl Profile {
     pub fn from_event(event: crate::Event) -> Self {
         Self {
             metadata: serde_json::from_str(&event.content).unwrap_or_default(),
-            pubkey: event.pubkey.clone(),
+            pubkey: event.pubkey,
             event: Some(event),
         }
     }
@@ -43,7 +43,7 @@ impl Profile {
                 INDEXER_RELAYS,
                 crate::Filter {
                     kinds: Some(vec![10002.into()]),
-                    authors: Some(vec![pk.clone()]),
+                    authors: Some(vec![pk]),
                     limit: Some(1),
                     ..Default::default()
                 },
@@ -53,7 +53,7 @@ impl Profile {
 
         let filter = crate::Filter {
             kinds: Some(vec![0.into()]),
-            authors: Some(vec![pk.clone()]),
+            authors: Some(vec![pk]),
             limit: Some(1),
             ..Default::default()
         };
@@ -94,7 +94,7 @@ impl Profile {
     }
 
     pub async fn fetch_metadata(&mut self, pool: &crate::Pool) {
-        let profile = Self::from_metadata_fetch(pool, self.pubkey.clone()).await;
+        let profile = Self::from_metadata_fetch(pool, self.pubkey).await;
 
         match (&self.event, &profile.event) {
             (None, Some(_)) => *self = profile,
@@ -209,7 +209,7 @@ mod tests {
 
     #[test]
     fn test_metadata_from_event() {
-        let pk = "7ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f9"
+        let pk: crate::keys::PubKey = "7ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f9"
             .parse()
             .unwrap();
         let event = crate::Event {

@@ -1,4 +1,4 @@
-use std::hash::{BuildHasher, Hash, Hasher};
+use std::hash::BuildHasher;
 
 pub const TAG_HASHER_SEED: u64 = 64;
 
@@ -7,7 +7,7 @@ pub type Result<T> = std::result::Result<T, DatabaseError>;
 #[derive(thiserror::Error, Debug)]
 pub enum DatabaseError {
     #[error("LMDB error: {0}")]
-    LMDB(String),
+    Lmdb(String),
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -44,7 +44,7 @@ pub trait EventDatabase {
             return Err(DatabaseError::DuplicateEvent);
         }
 
-        txn.save(&event)?;
+        txn.save(event)?;
         Ok(())
     }
 
@@ -84,7 +84,7 @@ pub trait EventDatabase {
         // create filter to find existing events
         let mut filter = crate::Filter {
             kinds: Some(vec![event.kind]),
-            authors: Some(vec![event.pubkey.clone()]),
+            authors: Some(vec![event.pubkey]),
             limit: Some(10),
             ..Default::default()
         };
@@ -136,7 +136,7 @@ pub trait WriteTransaction<'t>: ReadTransaction<'t> {
     fn del_key(&mut self, index_key: IndexKey) -> Result<()>;
 
     fn save(&mut self, event: &crate::Event) -> Result<()> {
-        self.put_event(&event)?;
+        self.put_event(event)?;
 
         get_index_keys_for_event(event, |index_key| {
             self.put_key(index_key)?;
@@ -226,13 +226,13 @@ where
         }
 
         // after those have ended start pulling results from the queries
-        if self.index_queries.len() == 0 {
+        if self.index_queries.is_empty() {
             return None;
         }
 
         if !self.initialized {
             for query in self.index_queries.iter() {
-                let mut cursor = self.txn.new_cursor(&query);
+                let mut cursor = self.txn.new_cursor(query);
 
                 // pull some entries from every cursor
                 cursor.pull();
@@ -244,83 +244,82 @@ where
 
         // if we don't have any events waiting to be yielded to the iterator, perform the fetch flow
         loop {
-            if self.collectable.len() == 0 {
-                if self.cursors.len() > 0 {
-                    // sort such that the cursors will be the ones we'll read from as they're the less advanced
-                    glidesort::sort_in_vec_by_key(&mut self.cursors, |c| c.1.last_read_timestamp());
+            if self.collectable.is_empty() && !self.cursors.is_empty() {
+                // sort such that the cursors will be the ones we'll read from as they're the less advanced
+                glidesort::sort_in_vec_by_key(&mut self.cursors, |c| c.1.last_read_timestamp());
 
-                    // and any entry already pulled that has a timestamp higher than this can al ready be collected
-                    // (if there is no cutpoint that means we have no results to collect and our query will be ended)
-                    if let Some(cutpoint) = self.cursors.last().map(|c| c.1.last_read_timestamp()) {
-                        // reading from db and collecting events
-                        for (query, cursor) in &mut self.cursors {
-                            for _ in 0..cursor.total_pulled() {
-                                if let Some(limit) = query.limit
-                                    && *query.total_sent.borrow() >= limit
-                                {
-                                    cursor.set_done();
-                                    break;
-                                }
+                // and any entry already pulled that has a timestamp higher than this can al ready be collected
+                // (if there is no cutpoint that means we have no results to collect and our query will be ended)
+                if let Some(cutpoint) = self.cursors.last().map(|c| c.1.last_read_timestamp()) {
+                    // reading from db and collecting events
+                    for (query, cursor) in &mut self.cursors {
+                        for _ in 0..cursor.total_pulled() {
+                            if let Some(limit) = query.limit
+                                && *query.total_sent.borrow() >= limit
+                            {
+                                cursor.set_done();
+                                break;
+                            }
 
-                                // we'll always be collecting from the front of the vec
-                                if cursor.first_pulled_timestamp() < cutpoint {
-                                    // from this point on we stop collecting
-                                    break;
-                                }
+                            // we'll always be collecting from the front of the vec
+                            if cursor.first_pulled_timestamp() < cutpoint {
+                                // from this point on we stop collecting
+                                break;
+                            }
 
-                                // otherwise we're still good, collect this (and remove it)
-                                let id = cursor.pop_front_pulled_id();
-                                let event = match self.txn.get_event(id) {
-                                    Err(err) => {
-                                        log::warn!("failed to get event with {}: {}", id, err);
-                                        continue;
-                                    }
-                                    Ok(event) => event,
-                                };
-
-                                // check if this event passes the other filters before actually sending it
-                                if let Some(extra_kinds) = &query.extra_kinds {
-                                    if !extra_kinds.contains(&event.kind.0) {
-                                        continue;
-                                    };
-                                }
-                                if let Some(extra_authors) = &query.extra_authors {
-                                    if !extra_authors.contains(&event.pubkey.0) {
-                                        continue;
-                                    };
-                                }
-
-                                let mut tags_ok = false;
-                                if let Some(extra_tag) = &query.extra_tag {
-                                    let tags = &event.tags.0;
-                                    for tag in tags.iter() {
-                                        if tag.len() >= 2 && tag[0] == extra_tag.key() {
-                                            if extra_tag.values().contains(&tag[1].to_string()) {
-                                                tags_ok = true;
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    tags_ok = true;
-                                }
-                                if !tags_ok {
+                            // otherwise we're still good, collect this (and remove it)
+                            let id = cursor.pop_front_pulled_id();
+                            let event = match self.txn.get_event(id) {
+                                Err(err) => {
+                                    log::warn!("failed to get event with {}: {}", id, err);
                                     continue;
                                 }
+                                Ok(event) => event,
+                            };
 
-                                // this event is ok
-                                self.collectable.push(event);
-                                *query.total_sent.borrow_mut() += 1;
+                            // check if this event passes the other filters before actually sending it
+                            if let Some(extra_kinds) = &query.extra_kinds
+                                && !extra_kinds.contains(&event.kind.0)
+                            {
+                                continue;
+                            };
+                            if let Some(extra_authors) = &query.extra_authors
+                                && !extra_authors.contains(&event.pubkey.0)
+                            {
+                                continue;
+                            };
+
+                            let mut tags_ok = false;
+                            if let Some(extra_tag) = &query.extra_tag {
+                                let tags = &event.tags.0;
+                                for tag in tags.iter() {
+                                    if tag.len() >= 2
+                                        && tag[0] == extra_tag.key()
+                                        && extra_tag.values().contains(&tag[1].to_string())
+                                    {
+                                        tags_ok = true;
+                                    }
+                                }
+                            } else {
+                                tags_ok = true;
                             }
+                            if !tags_ok {
+                                continue;
+                            }
+
+                            // this event is ok
+                            self.collectable.push(event);
+                            *query.total_sent.borrow_mut() += 1;
                         }
                     }
-
-                    // after deciding what events are going to the client we order them
-                    self.collectable.sort_by_key(|event| event.created_at.0);
                 }
+
+                // after deciding what events are going to the client we order them
+                self.collectable.sort_by_key(|event| event.created_at.0);
             }
 
             // at this point we must have some events to dispatch, otherwise we end here
-            if self.collectable.len() == 0 {
+            if self.collectable.is_empty() {
                 return None;
             }
 
@@ -343,10 +342,10 @@ where
 
             // dispatch next event to caller, filtering out duplicates
             while let Some(event) = self.collectable.pop() {
-                if let Some(last_id) = self.last_sent.replace(&event.id) {
-                    if last_id == &event.id {
-                        continue;
-                    }
+                if let Some(last_id) = self.last_sent.replace(&event.id)
+                    && last_id == &event.id
+                {
+                    continue;
                 }
 
                 return Some(event);
@@ -595,7 +594,7 @@ fn plan_index_queries(queries: &mut Vec<std::rc::Rc<IndexQuery>>, filter: crate:
     if let Some(best_tagq) = &extra_tag {
         plan_tag_queries(
             queries,
-            &best_tagq,
+            best_tagq,
             &start_ts,
             end_ts,
             second_best,
@@ -621,6 +620,7 @@ fn plan_index_queries(queries: &mut Vec<std::rc::Rc<IndexQuery>>, filter: crate:
     }));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn plan_tag_queries(
     queries: &mut Vec<std::rc::Rc<IndexQuery>>,
     tq: &crate::TagQuery,
@@ -634,18 +634,16 @@ fn plan_tag_queries(
 ) {
     for v in &tq.1 {
         let mut key = [0u8; 1 + 8 + 4];
-        key[1 + 8..].copy_from_slice(&start_ts);
+        key[1 + 8..].copy_from_slice(start_ts);
 
-        if tq.0.len() > 0 {
+        if !tq.0.is_empty() {
             key[0] = tq.0.as_bytes()[0];
         }
 
         let key = match lowercase_hex::decode_to_slice(v, &mut key[1..1 + 8]) {
             Ok(_) => Vec::from(&key[..]),
             Err(_) => {
-                let mut s = foldhash::fast::FixedState::with_seed(TAG_HASHER_SEED).build_hasher();
-                v.hash(&mut s);
-                let hash = s.finish();
+                let hash = foldhash::fast::FixedState::with_seed(TAG_HASHER_SEED).hash_one(v);
                 key[1..1 + 8].copy_from_slice(&hash.to_ne_bytes());
                 Vec::from(&key[..])
             }
@@ -745,32 +743,29 @@ where
         });
         key[0] = tag[0].as_bytes()[0];
 
-        if tag[1].len() == 64 {
-            if lowercase_hex::decode_to_slice(&tag[1][8 * 2..8 * 2 + 8 * 2], &mut key[1..1 + 8])
+        if tag[1].len() == 64
+            && lowercase_hex::decode_to_slice(&tag[1][8 * 2..8 * 2 + 8 * 2], &mut key[1..1 + 8])
                 .is_ok()
-            {
-                cb(IndexKey {
-                    index: Index::Tag,
-                    key: key,
-                })?;
-                continue;
-            }
+        {
+            cb(IndexKey {
+                index: Index::Tag,
+                key,
+            })?;
+            continue;
         }
 
-        let mut s = foldhash::fast::FixedState::with_seed(TAG_HASHER_SEED).build_hasher();
-        tag[1].hash(&mut s);
-        let hash = s.finish();
+        let hash = foldhash::fast::FixedState::with_seed(TAG_HASHER_SEED).hash_one(&tag[1]);
         key[1..1 + 8].copy_from_slice(hash.to_ne_bytes().as_slice());
 
         cb(IndexKey {
             index: Index::Tag,
-            key: key,
+            key,
         })?;
     }
 
     // by p-tag + k-tag (includes all variantions possible)
     let mut kp_key: Option<[u8; 8 + 2 + 4]> = None;
-    for (k_tagname, p_tagname) in vec![("K", "p"), ("K", "P")] {
+    for (k_tagname, p_tagname) in [("K", "p"), ("K", "P")] {
         for k_tag in &event.tags.0 {
             if k_tag.len() >= 2 && k_tag[0] == k_tagname {
                 if let Ok(k) = k_tag[1].parse::<u16>() {
@@ -783,18 +778,19 @@ where
                     key[8..8 + 2].copy_from_slice(&k.to_ne_bytes()); // prefill "k" for these
 
                     for p_tag in &event.tags.0 {
-                        if p_tag.len() >= 2 && p_tag[0] == p_tagname && p_tag[1].len() == 64 {
-                            if lowercase_hex::decode_to_slice(
+                        if p_tag.len() >= 2
+                            && p_tag[0] == p_tagname
+                            && p_tag[1].len() == 64
+                            && lowercase_hex::decode_to_slice(
                                 &p_tag[1][8 * 2..8 * 2 + 8 * 2],
                                 &mut key[0..8],
                             )
                             .is_ok()
-                            {
-                                cb(IndexKey {
-                                    index: Index::PtagKtag,
-                                    key: key,
-                                })?;
-                            }
+                        {
+                            cb(IndexKey {
+                                index: Index::PtagKtag,
+                                key,
+                            })?;
                         }
                     }
                 }

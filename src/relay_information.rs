@@ -62,7 +62,7 @@ pub async fn fetch(url: &str) -> Result<RelayInformationDocument> {
         }
     }
 
-    if info.icon == "" {
+    if info.icon.is_empty() {
         let mut icon = normalized_url.clone();
         icon.set_path("/favicon.ico");
         info.icon = format!("http{}", &icon.as_str()[2..]);

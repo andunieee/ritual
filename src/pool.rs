@@ -21,9 +21,15 @@ pub struct PublishResult {
 
 #[derive(Debug)]
 pub enum Occurrence {
-    Event(crate::Event, url::Url),
+    Event(Box<crate::Event>, url::Url),
     EOSE,
     Close,
+}
+
+impl Default for Pool {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Pool {
@@ -39,8 +45,7 @@ impl Pool {
         self.relays
             .lock()
             .await
-            .get(normalized_url.as_str())
-            .map(|relay| relay.clone())
+            .get(normalized_url.as_str()).cloned()
     }
 
     /// get or create a relay connection to the given url
@@ -148,7 +153,7 @@ impl Pool {
         while let Some(occ) = occurrences.recv().await {
             match occ {
                 Occurrence::Event(event, _) => {
-                    events.push(event);
+                    events.push(*event);
                 }
                 _ => {
                     break;
@@ -199,7 +204,7 @@ impl Pool {
                         match occ {
                             crate::relay::Occurrence::Event(event) => {
                                 if tx
-                                    .send(Occurrence::Event(event, relay.url.clone()))
+                                    .send(Occurrence::Event(Box::new(event), relay.url.clone()))
                                     .await
                                     .is_err()
                                 {
@@ -207,17 +212,14 @@ impl Pool {
                                     return;
                                 }
                             }
-                            crate::relay::Occurrence::EOSE => {
+                            crate::relay::Occurrence::Eose => {
                                 if eose_counter.fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
                                     == 1
-                                {
-                                    if !eosed.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                                        if tx.send(Occurrence::EOSE).await.is_err() {
+                                    && !eosed.swap(true, std::sync::atomic::Ordering::SeqCst)
+                                        && tx.send(Occurrence::EOSE).await.is_err() {
                                             // receiver dropped
                                             return;
                                         }
-                                    }
-                                }
                             }
                             crate::relay::Occurrence::Close(_) => break,
                         }
@@ -225,21 +227,17 @@ impl Pool {
                 }
 
                 // if we are here, it means ensure_relay or subscribe failed or the subscription ended.
-                if eose_counter.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1 {
-                    if !eosed.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                        if tx.send(Occurrence::EOSE).await.is_err() {
+                if eose_counter.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1
+                    && !eosed.swap(true, std::sync::atomic::Ordering::SeqCst)
+                        && tx.send(Occurrence::EOSE).await.is_err() {
                             // receiver dropped
                             return;
                         }
-                    }
-                }
 
-                if closed_counter.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1 {
-                    if tx.send(Occurrence::Close).await.is_err() {
+                if closed_counter.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1
+                    && tx.send(Occurrence::Close).await.is_err() {
                         // receiver dropped
-                        return;
                     }
-                }
             });
         }
 

@@ -101,7 +101,7 @@ impl std::str::FromStr for SecretKey {
             }
         } else if s.len() == 64 {
             let mut bytes = [0u8; 32];
-            lowercase_hex::decode_to_slice(&s, &mut bytes)?;
+            lowercase_hex::decode_to_slice(s, &mut bytes)?;
 
             // ensure it is in the curve
             let _ = secp256k1::SecretKey::from_byte_array(bytes)
@@ -121,7 +121,7 @@ impl std::fmt::Display for SecretKey {
 }
 
 /// a 32-byte public key
-#[derive(Clone, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Deserialize, rkyv::Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Deserialize, rkyv::Serialize)]
 pub struct PubKey(pub [u8; 32]);
 
 impl PubKey {

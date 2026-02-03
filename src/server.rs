@@ -100,66 +100,63 @@ pub async fn start(
                                         // handle incoming messages
                                         tokio::spawn(async move {
                                             while let Some(Ok(msg)) = rx.next().await {
-                                                match msg {
-                                                    tungstenite::Message::Text(msg_text) => {
-                                                        match serde_json::from_str::<crate::envelopes::Envelope>(
-                                                            msg_text.as_str(),
-                                                        ) {
-                                                            Ok(crate::envelopes::Envelope::Req {
+                                                if let tungstenite::Message::Text(msg_text) = msg {
+                                                    match serde_json::from_str::<crate::envelopes::Envelope>(
+                                                        msg_text.as_str(),
+                                                    ) {
+                                                        Ok(crate::envelopes::Envelope::Req {
+                                                            subscription_id,
+                                                            filters,
+                                                        }) => {
+                                                            let _ = handle_req_envelope(
+                                                                &ri,
+                                                                tx.clone(),
                                                                 subscription_id,
                                                                 filters,
-                                                            }) => {
-                                                                let _ = handle_req_envelope(
-                                                                    &ri,
-                                                                    tx.clone(),
-                                                                    subscription_id,
-                                                                    filters,
+                                                            )
+                                                            .await;
+                                                        }
+                                                        // Ok(Envelope::CountAsk { subscription_id, filter }) => {
+                                                        //     handle_count_ask(
+                                                        //         &ri, tx, subscription_id, filter,
+                                                        //     )
+                                                        //     .await;
+                                                        // }
+                                                        Ok(crate::envelopes::Envelope::OutEvent {
+                                                            event,
+                                                        }) => {
+                                                            let _ = handle_event_envelope(
+                                                                &ri,
+                                                                tx.clone(),
+                                                                &event,
+                                                            )
+                                                            .await;
+                                                        }
+                                                        Ok(envelope) => {
+                                                            let notice = serde_json::json!(["NOTICE", format!("we don't know how to handle this {}", envelope.label())]);
+                                                            let _ = tx
+                                                                .lock()
+                                                                .await
+                                                                .send(
+                                                                    tungstenite::Message::text(
+                                                                        notice.to_string(),
+                                                                    ),
                                                                 )
                                                                 .await;
-                                                            }
-                                                            // Ok(Envelope::CountAsk { subscription_id, filter }) => {
-                                                            //     handle_count_ask(
-                                                            //         &ri, tx, subscription_id, filter,
-                                                            //     )
-                                                            //     .await;
-                                                            // }
-                                                            Ok(crate::envelopes::Envelope::OutEvent {
-                                                                event,
-                                                            }) => {
-                                                                let _ = handle_event_envelope(
-                                                                    &ri,
-                                                                    tx.clone(),
-                                                                    &event,
+                                                        }
+                                                        Err(err) => {
+                                                            let notice = serde_json::json!(["NOTICE", format!("failed to parse message: {}", err)]);
+                                                            let _ = tx
+                                                                .lock()
+                                                                .await
+                                                                .send(
+                                                                    tungstenite::Message::text(
+                                                                        notice.to_string(),
+                                                                    ),
                                                                 )
                                                                 .await;
-                                                            }
-                                                            Ok(envelope) => {
-                                                                let notice = serde_json::json!(["NOTICE", format!("we don't know how to handle this {}", envelope.label())]);
-                                                                let _ = tx
-                                                                    .lock()
-                                                                    .await
-                                                                    .send(
-                                                                        tungstenite::Message::text(
-                                                                            notice.to_string(),
-                                                                        ),
-                                                                    )
-                                                                    .await;
-                                                            }
-                                                            Err(err) => {
-                                                                let notice = serde_json::json!(["NOTICE", format!("failed to parse message: {}", err)]);
-                                                                let _ = tx
-                                                                    .lock()
-                                                                    .await
-                                                                    .send(
-                                                                        tungstenite::Message::text(
-                                                                            notice.to_string(),
-                                                                        ),
-                                                                    )
-                                                                    .await;
-                                                            }
                                                         }
                                                     }
-                                                    _ => {}
                                                 }
                                             }
                                         });
@@ -181,8 +178,8 @@ pub async fn start(
                     }
                 } else {
                     // is this a metadata request?
-                    if let Some(accept) = req.headers().get("accept") {
-                        if accept == "application/nostr+json" {
+                    if let Some(accept) = req.headers().get("accept")
+                        && accept == "application/nostr+json" {
                             let info_json = match serde_json::to_string(&ri.info) {
                                 Ok(json) => json,
                                 Err(e) => return Err(ServiceError::Json(e)),
@@ -194,7 +191,6 @@ pub async fn start(
                                 .body(http_body_util::Full::new(bytes::Bytes::from(info_json)))
                                 .unwrap());
                         }
-                    }
 
                     // default response
                     Ok(hyper::Response::builder()
@@ -340,7 +336,7 @@ async fn handle_event_envelope(
     }
 
     // possibly save event
-    match ri.custom_relay.lock().await.handle_event(&event) {
+    match ri.custom_relay.lock().await.handle_event(event) {
         Ok(()) => {
             let ok_json = serde_json::json!(["OK", event.id, true, ""]);
             tx.lock()
@@ -389,7 +385,7 @@ mod tests {
                 filter.get_theoretical_limit(),
             ));
             for event in &self.events {
-                if filter.matches(&event) {
+                if filter.matches(event) {
                     resp.push(event.clone());
                 }
             }
@@ -403,7 +399,7 @@ mod tests {
 
     impl CustomRelay for EvenTimestampRelay {
         fn handle_event(&mut self, event: &Event) -> std::result::Result<(), String> {
-            if event.created_at.0 % 2 == 0 {
+            if event.created_at.0.is_multiple_of(2) {
                 self.events.push(event.clone());
                 Ok(())
             } else {
@@ -417,7 +413,7 @@ mod tests {
                 filter.get_theoretical_limit(),
             ));
             for event in &self.events {
-                if filter.matches(&event) {
+                if filter.matches(event) {
                     resp.push(event.clone());
                 }
             }
@@ -445,7 +441,7 @@ mod tests {
                 filter.get_theoretical_limit(),
             ));
             for event in &self.events {
-                if filter.matches(&event) {
+                if filter.matches(event) {
                     resp.push(event.clone());
                 }
             }
@@ -459,7 +455,7 @@ mod tests {
 
     impl CustomRelay for MultipleOfThreeRelay {
         fn handle_event(&mut self, event: &Event) -> std::result::Result<(), String> {
-            if event.created_at.0 % 3 == 0 {
+            if event.created_at.0.is_multiple_of(3) {
                 self.events.push(event.clone());
                 Ok(())
             } else {
@@ -473,7 +469,7 @@ mod tests {
                 filter.get_theoretical_limit(),
             ));
             for event in &self.events {
-                if filter.matches(&event) {
+                if filter.matches(event) {
                     resp.push(event.clone());
                 }
             }
@@ -543,7 +539,7 @@ mod tests {
         sleep(Duration::from_millis(100)).await;
 
         // connect to the relay
-        let relay_url = format!("ws://127.0.0.1:8082").parse().unwrap();
+        let relay_url = "ws://127.0.0.1:8082".to_string().parse().unwrap();
         let relay = Relay::connect(relay_url, None).await.unwrap();
 
         // create and publish an event
@@ -582,7 +578,7 @@ mod tests {
                         received_event = Some(evt);
                     }
                 }
-                Occurrence::EOSE => {
+                Occurrence::Eose => {
                     got_eose = true;
                     break;
                 }

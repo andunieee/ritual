@@ -71,7 +71,7 @@ pub fn decrypt(
     conversation_key: &[u8; 32],
 ) -> Result<String, DecryptError> {
     let c_len = b64_ciphertext_wrapped.len();
-    if c_len < 132 || c_len > 87472 {
+    if !(132..=87472).contains(&c_len) {
         return Err(DecryptError::InvalidPayloadLength);
     }
     if b64_ciphertext_wrapped.starts_with('#') {
@@ -85,7 +85,7 @@ pub fn decrypt(
     }
 
     let d_len = decoded.len();
-    if d_len < 99 || d_len > 65603 {
+    if !(99..=65603).contains(&d_len) {
         return Err(DecryptError::InvalidDataLength);
     }
 
@@ -168,8 +168,7 @@ fn hkdf_extract(salt: &[u8], input_key: &[u8]) -> [u8; 32] {
     hmac.update(input_key);
     hmac.finalize()
         .into_bytes()
-        .try_into()
-        .expect("hmac sha256 result will always be 32 bytes")
+        .into()
 }
 
 fn hkdf_expand_into(pseudorandomkey: &[u8], info: &[u8], iterations: usize) -> Vec<u8> {

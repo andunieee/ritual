@@ -52,22 +52,12 @@ impl Tags {
 
     /// find the last tag with the given key
     pub fn find_last(&self, key: &str) -> Option<&Tag> {
-        for tag in self.0.iter().rev() {
-            if tag.len() >= 2 && tag[0] == key {
-                return Some(tag);
-            }
-        }
-        None
+        self.0.iter().rev().find(|&tag| tag.len() >= 2 && tag[0] == key).map(|v| v as _)
     }
 
     /// find the last tag with specific key and value
     pub fn find_last_with_value(&self, key: &str, value: &str) -> Option<&Tag> {
-        for tag in self.0.iter().rev() {
-            if tag.len() >= 2 && tag[0] == key && tag[1] == value {
-                return Some(tag);
-            }
-        }
-        None
+        self.0.iter().rev().find(|&tag| tag.len() >= 2 && tag[0] == key && tag[1] == value).map(|v| v as _)
     }
 
     /// check if tags contain any of the given values for a tag name
