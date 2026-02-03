@@ -1,10 +1,10 @@
 [package]
 name = "ritual"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2024"
 license = "MIT"
 authors = ["andunië", "andunie@cassis.cash"]
-description = "Simple and powerful Nostr library."
+description = "simple nostr library"
 repository = "https://github.com/andunieee/ritual"
 keywords = ["nostr"]
 
