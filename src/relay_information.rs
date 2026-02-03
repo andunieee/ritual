@@ -82,7 +82,7 @@ mod tests {
             ("https://nostr.land", false, "wss://nostr.land/"),
             ("nostr.wine", false, "wss://nostr.wine/"),
             ("relay.damus.io", false, "wss://relay.damus.io/"),
-            ("https://relay.nostr.band", false, "wss://relay.nostr.band/"),
+            ("https://nos.lol", false, "wss://nos.lol/"),
             ("wss://relay.primal.net", false, "wss://relay.primal.net/"),
             ("wlenwqkeqwe.asjdaskd", true, "wss://wlenwqkeqwe.asjdaskd/"),
             ("bligblag", true, "wss://bligblag/"),

@@ -10,7 +10,7 @@ const FALLBACK_METADATA_RELAYS: [&str; 4] = [
     "relay.damus.io",
     "purplepag.es",
     "relay.primal.net",
-    "relay.nostr.band",
+    "nos.lol",
 ];
 
 #[derive(Debug, Clone)]
