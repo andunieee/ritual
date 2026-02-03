@@ -409,8 +409,7 @@ mod tests {
         // test saving and retrieving event
         db.save_event(&event).unwrap();
 
-        let mut results = db.query_events(vec![Filter::default()]);
-
+        let mut results = db.query_events(&mut [Filter::default()]);
         let retrieved = results.next().unwrap();
         assert_eq!(event.id, retrieved.id);
 
@@ -446,7 +445,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut results = db.query_events(vec![filter]);
+        let mut results = db.query_events(&mut [filter]);
         let retrieved = results.next().unwrap();
         assert_eq!(event.pubkey.0, retrieved.pubkey.0);
     }
@@ -475,7 +474,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut results = db.query_events(vec![filter]);
+        let mut results = db.query_events(&mut [filter]);
         let retrieved = results.next().unwrap();
         assert_eq!(event.kind.0, retrieved.kind.0);
     }

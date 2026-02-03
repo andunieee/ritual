@@ -54,7 +54,10 @@ pub trait EventDatabase {
         Ok(())
     }
 
-    fn query_events<'t>(&self, filters: Vec<crate::Filter>) -> QueryResults<'t, Self::ReadTxn<'t>> {
+    fn query_events<'t>(
+        &self,
+        filters: &mut [crate::Filter],
+    ) -> QueryResults<'t, Self::ReadTxn<'t>> {
         let txn = self.begin_read_txn();
         let mut results = QueryResults::new(txn);
 
@@ -65,7 +68,7 @@ pub trait EventDatabase {
             }
 
             // id query, just process these ids and that's it
-            if let Some(ids) = filter.ids {
+            if let Some(ids) = &filter.ids {
                 results.ids.reserve(ids.len());
                 for id in ids {
                     results.ids.push(id.short());
@@ -100,7 +103,7 @@ pub trait EventDatabase {
 
         // find and delete older events
         let mut results = QueryResults::new(txn.clone());
-        plan_index_queries(&mut results.index_queries, filter);
+        plan_index_queries(&mut results.index_queries, &mut filter);
 
         for existing_event in results {
             if existing_event.created_at.0 < event.created_at.0 {
@@ -371,14 +374,14 @@ pub struct IndexQuery {
     extra_authors: Option<std::rc::Rc<Vec<[u8; 32]>>>,
 }
 
-fn plan_index_queries(queries: &mut Vec<std::rc::Rc<IndexQuery>>, filter: crate::Filter) {
+fn plan_index_queries(queries: &mut Vec<std::rc::Rc<IndexQuery>>, filter: &mut crate::Filter) {
     let crate::Filter {
         until,
         since,
         limit,
-        authors: mut authors_,
-        tags: mut tags_,
-        kinds: mut kinds_,
+        authors: authors_,
+        tags: tags_,
+        kinds: kinds_,
 
         ids: _,
         search: _,
@@ -413,18 +416,18 @@ fn plan_index_queries(queries: &mut Vec<std::rc::Rc<IndexQuery>>, filter: crate:
                 &start_ts,
                 end_ts,
                 second_best_tag,
-                kinds_.map(|kinds| {
+                kinds_.as_ref().map(|kinds| {
                     std::rc::Rc::new(
                         kinds
-                            .into_iter()
+                            .iter()
                             .map(|kind| rkyv::rend::u16_le::from(kind.0))
                             .collect(),
                     )
                 }),
-                authors_.map(|authors| {
+                authors_.as_ref().map(|authors| {
                     std::rc::Rc::new(authors.iter().map(|author| author.0).collect())
                 }),
-                limit,
+                *limit,
                 total_sent,
             );
 
@@ -494,7 +497,7 @@ fn plan_index_queries(queries: &mut Vec<std::rc::Rc<IndexQuery>>, filter: crate:
                             extra_tag: best_possible_tag.clone(),
                             extra_kinds: extra_kinds.clone(),
                             extra_authors: extra_authors.clone(),
-                            limit,
+                            limit: *limit,
                             total_sent: total_sent.clone(),
                         }));
 
@@ -534,7 +537,7 @@ fn plan_index_queries(queries: &mut Vec<std::rc::Rc<IndexQuery>>, filter: crate:
                     extra_kinds: None,
                     extra_authors: None,
 
-                    limit,
+                    limit: *limit,
                     total_sent: total_sent.clone(),
                 }));
             }
@@ -558,7 +561,7 @@ fn plan_index_queries(queries: &mut Vec<std::rc::Rc<IndexQuery>>, filter: crate:
                 extra_kinds: None,
                 extra_authors: None,
 
-                limit,
+                limit: *limit,
                 total_sent: total_sent.clone(),
             }));
         }
@@ -581,7 +584,7 @@ fn plan_index_queries(queries: &mut Vec<std::rc::Rc<IndexQuery>>, filter: crate:
                 extra_kinds: None,
                 extra_authors: None,
 
-                limit,
+                limit: *limit,
                 total_sent: total_sent.clone(),
             }));
         }
@@ -600,7 +603,7 @@ fn plan_index_queries(queries: &mut Vec<std::rc::Rc<IndexQuery>>, filter: crate:
             second_best,
             None,
             None,
-            limit,
+            *limit,
             total_sent,
         );
         return;
@@ -615,7 +618,7 @@ fn plan_index_queries(queries: &mut Vec<std::rc::Rc<IndexQuery>>, filter: crate:
         extra_kinds: None,
         extra_authors: None,
 
-        limit,
+        limit: *limit,
         total_sent,
     }));
 }

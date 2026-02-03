@@ -18,7 +18,7 @@ impl TagQuery {
         self.0.as_str()
     }
 
-    pub fn values(&self) -> &Vec<String> {
+    pub fn values(&self) -> &[String] {
         &self.1
     }
 

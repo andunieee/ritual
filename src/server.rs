@@ -101,8 +101,10 @@ pub async fn start(
                                         tokio::spawn(async move {
                                             while let Some(Ok(msg)) = rx.next().await {
                                                 if let tungstenite::Message::Text(msg_text) = msg {
-                                                    match serde_json::from_str::<crate::envelopes::Envelope>(
-                                                        msg_text.as_str(),
+                                                    match serde_json::from_str::<
+                                                        crate::envelopes::Envelope,
+                                                    >(
+                                                        msg_text.as_str()
                                                     ) {
                                                         Ok(crate::envelopes::Envelope::Req {
                                                             subscription_id,
@@ -112,7 +114,7 @@ pub async fn start(
                                                                 &ri,
                                                                 tx.clone(),
                                                                 subscription_id,
-                                                                filters,
+                                                                &filters,
                                                             )
                                                             .await;
                                                         }
@@ -122,9 +124,11 @@ pub async fn start(
                                                         //     )
                                                         //     .await;
                                                         // }
-                                                        Ok(crate::envelopes::Envelope::OutEvent {
-                                                            event,
-                                                        }) => {
+                                                        Ok(
+                                                            crate::envelopes::Envelope::OutEvent {
+                                                                event,
+                                                            },
+                                                        ) => {
                                                             let _ = handle_event_envelope(
                                                                 &ri,
                                                                 tx.clone(),
@@ -133,27 +137,35 @@ pub async fn start(
                                                             .await;
                                                         }
                                                         Ok(envelope) => {
-                                                            let notice = serde_json::json!(["NOTICE", format!("we don't know how to handle this {}", envelope.label())]);
+                                                            let notice = serde_json::json!([
+                                                                "NOTICE",
+                                                                format!(
+                                                                    "we don't know how to handle this {}",
+                                                                    envelope.label()
+                                                                )
+                                                            ]);
                                                             let _ = tx
                                                                 .lock()
                                                                 .await
-                                                                .send(
-                                                                    tungstenite::Message::text(
-                                                                        notice.to_string(),
-                                                                    ),
-                                                                )
+                                                                .send(tungstenite::Message::text(
+                                                                    notice.to_string(),
+                                                                ))
                                                                 .await;
                                                         }
                                                         Err(err) => {
-                                                            let notice = serde_json::json!(["NOTICE", format!("failed to parse message: {}", err)]);
+                                                            let notice = serde_json::json!([
+                                                                "NOTICE",
+                                                                format!(
+                                                                    "failed to parse message: {}",
+                                                                    err
+                                                                )
+                                                            ]);
                                                             let _ = tx
                                                                 .lock()
                                                                 .await
-                                                                .send(
-                                                                    tungstenite::Message::text(
-                                                                        notice.to_string(),
-                                                                    ),
-                                                                )
+                                                                .send(tungstenite::Message::text(
+                                                                    notice.to_string(),
+                                                                ))
                                                                 .await;
                                                         }
                                                     }
@@ -179,18 +191,19 @@ pub async fn start(
                 } else {
                     // is this a metadata request?
                     if let Some(accept) = req.headers().get("accept")
-                        && accept == "application/nostr+json" {
-                            let info_json = match serde_json::to_string(&ri.info) {
-                                Ok(json) => json,
-                                Err(e) => return Err(ServiceError::Json(e)),
-                            };
-                            return Ok(hyper::Response::builder()
-                                .status(hyper::StatusCode::OK)
-                                .header("content-type", "application/nostr+json")
-                                .header("access-control-allow-origin", "*")
-                                .body(http_body_util::Full::new(bytes::Bytes::from(info_json)))
-                                .unwrap());
-                        }
+                        && accept == "application/nostr+json"
+                    {
+                        let info_json = match serde_json::to_string(&ri.info) {
+                            Ok(json) => json,
+                            Err(e) => return Err(ServiceError::Json(e)),
+                        };
+                        return Ok(hyper::Response::builder()
+                            .status(hyper::StatusCode::OK)
+                            .header("content-type", "application/nostr+json")
+                            .header("access-control-allow-origin", "*")
+                            .body(http_body_util::Full::new(bytes::Bytes::from(info_json)))
+                            .unwrap());
+                    }
 
                     // default response
                     Ok(hyper::Response::builder()
@@ -254,11 +267,11 @@ async fn handle_req_envelope(
         >,
     >,
     subscription_id: String,
-    filters: Vec<crate::Filter>,
+    filters: &[crate::Filter],
 ) -> Result<(), HandleReqEnvelopeError> {
     for filter in filters {
         // query events
-        match ri.custom_relay.lock().await.handle_request(&filter) {
+        match ri.custom_relay.lock().await.handle_request(filter) {
             Ok(events) => {
                 for event in events {
                     let event_env = serde_json::json!(["EVENT", subscription_id, event]);
@@ -367,7 +380,7 @@ mod tests {
     use crate::relay_information::RelayInformationDocument;
     use crate::*;
     use std::{cmp::min, net::SocketAddr};
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
 
     struct InMemoryRelay {
         events: Vec<Event>,
@@ -737,7 +750,11 @@ mod tests {
             .await;
         assert_eq!(multiple_of_three_events.len(), 3);
         for event in &multiple_of_three_events {
-            assert_eq!(event.created_at.0 % 3, 0, "multiple of three relay should only have events with timestamps that are multiples of 3");
+            assert_eq!(
+                event.created_at.0 % 3,
+                0,
+                "multiple of three relay should only have events with timestamps that are multiples of 3"
+            );
         }
 
         // verify specific timestamps
