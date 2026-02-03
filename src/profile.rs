@@ -209,9 +209,10 @@ mod tests {
 
     #[test]
     fn test_metadata_from_event() {
-        let pk: crate::keys::PubKey = "7ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f9"
-            .parse()
-            .unwrap();
+        let pk: crate::keys::PubKey =
+            "7ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f9"
+                .parse()
+                .unwrap();
         let event = crate::Event {
             id: crate::ID::from_hex("7ad1758b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f9").unwrap(),
             pubkey: pk,
