@@ -15,16 +15,16 @@ impl EventTemplate {
         let pubkey = secret_key.pubkey();
 
         // create keypair from secret key
-        let keypair =
-            secp256k1::Keypair::from_seckey_byte_array(secp256k1::SECP256K1, secret_key.0)
-                .expect("should always work because SecretKey should always be valid");
+        let secret_key = secp256k1::SecretKey::from_secret_bytes(secret_key.0)
+            .expect("should always work because SecretKey should always be valid");
+        let keypair = secp256k1::Keypair::from_secret_key(&secret_key);
 
         // serialize and hash the event
         let serialized = self.serialize(&pubkey);
         let hash = sha2::Sha256::digest(&serialized);
 
         // sign the hash
-        let signature = secp256k1::SECP256K1.sign_schnorr_no_aux_rand(&hash, &keypair);
+        let signature = secp256k1::schnorr::sign_no_aux_rand(&hash, &keypair);
 
         crate::Event {
             id: crate::ID::from_bytes(hash.into()),

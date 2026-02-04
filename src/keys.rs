@@ -47,14 +47,14 @@ impl SecretKey {
     /// generate a new random secret key
     pub fn generate() -> Self {
         let mut rng = secp256k1::rand::rng();
-        let keypair = secp256k1::Keypair::new(secp256k1::global::SECP256K1, &mut rng);
+        let keypair = secp256k1::Keypair::new(&mut rng);
         SecretKey(keypair.secret_bytes())
     }
 
     /// create a new secret key from bytes
     pub fn from_bytes(bytes: [u8; 32]) -> Result<Self, SecretKeyError> {
         // ensure it is in the curve
-        let _ = secp256k1::SecretKey::from_byte_array(bytes)
+        let _ = secp256k1::SecretKey::from_secret_bytes(bytes)
             .map_err(|_| SecretKeyError::InvalidSecretKey)?;
 
         Ok(Self(bytes))
@@ -77,15 +77,14 @@ impl SecretKey {
 
     /// get the public key for this secret key
     pub fn pubkey(&self) -> PubKey {
-        let secret_key = secp256k1::SecretKey::from_byte_array(self.0).unwrap();
-        let keypair =
-            secp256k1::Keypair::from_secret_key(secp256k1::global::SECP256K1, &secret_key);
+        let secret_key = secp256k1::SecretKey::from_secret_bytes(self.0).unwrap();
+        let keypair = secp256k1::Keypair::from_secret_key(&secret_key);
         let (xonly_pk, _) = secp256k1::XOnlyPublicKey::from_keypair(&keypair);
         PubKey::from_bytes_unchecked(xonly_pk.serialize())
     }
 
     pub fn to_ecdsa_key(&self) -> secp256k1::SecretKey {
-        secp256k1::SecretKey::from_byte_array(self.0)
+        secp256k1::SecretKey::from_secret_bytes(self.0)
             .expect("should always work as secret keys are pre-validated")
     }
 }
@@ -104,7 +103,7 @@ impl std::str::FromStr for SecretKey {
             lowercase_hex::decode_to_slice(s, &mut bytes)?;
 
             // ensure it is in the curve
-            let _ = secp256k1::SecretKey::from_byte_array(bytes)
+            let _ = secp256k1::SecretKey::from_secret_bytes(bytes)
                 .map_err(|_| SecretKeyError::InvalidSecretKey)?;
 
             Ok(Self(bytes))
