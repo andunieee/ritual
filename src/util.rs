@@ -36,17 +36,6 @@ pub fn normalize_url(url_str: &str) -> Result<url::Url, url::ParseError> {
     Ok(url)
 }
 
-/// normalize OK message with prefix
-pub fn normalize_ok_message(reason: &str, prefix: &str) -> String {
-    if let Some(colon_pos) = reason.find(": ") {
-        let before_colon = &reason[..colon_pos];
-        if !before_colon.contains(' ') {
-            return reason.to_string();
-        }
-    }
-    format!("{}: {}", prefix, reason)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,37 +69,6 @@ mod tests {
         for (input, expected) in test_cases {
             let result = normalize_url(input).unwrap();
             assert_eq!(result.to_string(), expected, "failed for input: {}", input);
-        }
-    }
-
-    #[test]
-    fn test_normalize_ok_message() {
-        let test_cases = vec![
-            // already has prefix
-            ("blocked: spam", "error", "blocked: spam"),
-            ("rate-limited: too fast", "error", "rate-limited: too fast"),
-            // needs prefix
-            ("spam detected", "blocked", "blocked: spam detected"),
-            ("invalid signature", "error", "error: invalid signature"),
-            (
-                "too many requests",
-                "rate-limited",
-                "rate-limited: too many requests",
-            ),
-            // edge cases
-            ("", "error", "error: "),
-            ("no colon here", "prefix", "prefix: no colon here"),
-            ("multiple: colons: here", "error", "multiple: colons: here"),
-            ("space before: colon", "error", "error: space before: colon"),
-        ];
-
-        for (reason, prefix, expected) in test_cases {
-            let result = normalize_ok_message(reason, prefix);
-            assert_eq!(
-                result, expected,
-                "failed for reason: '{}', prefix: '{}'",
-                reason, prefix
-            );
         }
     }
 

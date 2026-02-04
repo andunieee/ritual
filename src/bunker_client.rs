@@ -82,7 +82,7 @@ slotmap::new_key_type! { struct RequestKey ; }
 #[derive(Clone, Debug)]
 pub struct BunkerClient {
     client_secret_key: crate::SecretKey,
-    pool: crate::Pool,
+    pool: crate::Network,
     target: crate::PubKey,
     relays: Vec<String>,
     conversation_key: [u8; 32],
@@ -100,7 +100,7 @@ impl BunkerClient {
         client_secret_key: crate::SecretKey,
         target_pubkey: crate::PubKey,
         relays: Vec<String>,
-        pool: crate::Pool,
+        pool: crate::Network,
         on_auth_url: Option<AuthURLHandler>,
     ) -> Self {
         let client_pubkey = client_secret_key.pubkey();
@@ -156,32 +156,32 @@ impl BunkerClient {
                                 if let Ok(plain) = crate::message_encryption::decrypt(
                                     &event.content,
                                     &conversation_key,
-                                )
-                                    && let Ok(resp) = serde_json::from_str::<Response>(&plain) {
-                                        let rk = match lowercase_hex::decode_to_array::<&str, 8>(
-                                            &resp.id,
-                                        ) {
+                                ) && let Ok(resp) = serde_json::from_str::<Response>(&plain)
+                                {
+                                    let rk =
+                                        match lowercase_hex::decode_to_array::<&str, 8>(&resp.id) {
                                             Ok(bytes) => RequestKey(slotmap::KeyData::from_ffi(
                                                 u64::from_be_bytes(bytes),
                                             )),
                                             Err(_) => continue,
                                         };
 
-                                        if resp.result.as_deref() == Some("auth_url")
-                                            && let Some(auth_url) = &resp.error {
-                                                {
-                                                    if let Some(on_auth_fn) = on_auth_url.as_ref() {
-                                                        on_auth_fn.0(auth_url);
-                                                    }
-                                                }
-                                            }
-
-                                        if let Some(dispatcher) =
-                                            awaiting_responses.lock().await.remove(rk)
+                                    if resp.result.as_deref() == Some("auth_url")
+                                        && let Some(auth_url) = &resp.error
+                                    {
                                         {
-                                            let _ = dispatcher.send(resp);
+                                            if let Some(on_auth_fn) = on_auth_url.as_ref() {
+                                                on_auth_fn.0(auth_url);
+                                            }
                                         }
                                     }
+
+                                    if let Some(dispatcher) =
+                                        awaiting_responses.lock().await.remove(rk)
+                                    {
+                                        let _ = dispatcher.send(resp);
+                                    }
+                                }
                             }
                         }
                     }
@@ -195,7 +195,7 @@ impl BunkerClient {
     pub async fn connect(
         client_secret_key: crate::SecretKey,
         bunker_url: &str,
-        pool: crate::Pool,
+        pool: crate::Network,
         on_auth_url: Option<AuthURLHandler>,
     ) -> Result<Self, ConnectError> {
         let url = url::Url::parse(bunker_url)?;
@@ -333,9 +333,10 @@ impl BunkerClient {
         let mut sent = false;
         for url in self.relays.iter() {
             if let Some(relay) = self.pool.get_relay(url).await
-                && relay.publish(event.clone()).await.is_ok() {
-                    sent = true;
-                }
+                && relay.publish(event.clone()).await.is_ok()
+            {
+                sent = true;
+            }
         }
 
         if !sent {

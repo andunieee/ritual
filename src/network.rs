@@ -10,7 +10,7 @@ pub enum EnsureError {
 }
 
 #[derive(Debug)]
-pub struct Pool {
+pub struct Network {
     relays: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, crate::Relay>>>,
 }
 
@@ -26,13 +26,13 @@ pub enum Occurrence {
     Close,
 }
 
-impl Default for Pool {
+impl Default for Network {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Pool {
+impl Network {
     pub fn new() -> Self {
         Self {
             relays: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
@@ -45,7 +45,8 @@ impl Pool {
         self.relays
             .lock()
             .await
-            .get(normalized_url.as_str()).cloned()
+            .get(normalized_url.as_str())
+            .cloned()
     }
 
     /// get or create a relay connection to the given url
@@ -216,10 +217,11 @@ impl Pool {
                                 if eose_counter.fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
                                     == 1
                                     && !eosed.swap(true, std::sync::atomic::Ordering::SeqCst)
-                                        && tx.send(Occurrence::EOSE).await.is_err() {
-                                            // receiver dropped
-                                            return;
-                                        }
+                                    && tx.send(Occurrence::EOSE).await.is_err()
+                                {
+                                    // receiver dropped
+                                    return;
+                                }
                             }
                             crate::relay::Occurrence::Close(_) => break,
                         }
@@ -229,15 +231,17 @@ impl Pool {
                 // if we are here, it means ensure_relay or subscribe failed or the subscription ended.
                 if eose_counter.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1
                     && !eosed.swap(true, std::sync::atomic::Ordering::SeqCst)
-                        && tx.send(Occurrence::EOSE).await.is_err() {
-                            // receiver dropped
-                            return;
-                        }
+                    && tx.send(Occurrence::EOSE).await.is_err()
+                {
+                    // receiver dropped
+                    return;
+                }
 
                 if closed_counter.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1
-                    && tx.send(Occurrence::Close).await.is_err() {
-                        // receiver dropped
-                    }
+                    && tx.send(Occurrence::Close).await.is_err()
+                {
+                    // receiver dropped
+                }
             });
         }
 
@@ -247,7 +251,7 @@ impl Pool {
 }
 
 // we can clone the pool because its fields are just arcs
-impl Clone for Pool {
+impl Clone for Network {
     fn clone(&self) -> Self {
         Self {
             relays: self.relays.clone(),
@@ -263,7 +267,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pool_subscribe_multiple() {
-        let pool = Pool::new();
+        let pool = Network::new();
 
         let urls = vec![
             "wss://nos.lol".to_string(),
@@ -302,7 +306,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pool_ensure() {
-        let pool = Pool::new();
+        let pool = Network::new();
 
         let relay1 = pool.ensure_relay("wss://nos.lol").await.unwrap();
         let relay2 = pool.ensure_relay("wss://nos.lol").await.unwrap();

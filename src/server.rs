@@ -358,12 +358,15 @@ async fn handle_event_envelope(
                 .await?;
         }
         Err(e) => {
-            let ok_json = serde_json::json!([
-                "OK",
-                event.id,
-                false,
-                crate::normalize_ok_message(&e, "error")
-            ]);
+            let msg = if let Some(colon_pos) = e.find(": ")
+                && !e[..colon_pos].contains(' ')
+            {
+                e.to_string()
+            } else {
+                format!("error: {}", e)
+            };
+
+            let ok_json = serde_json::json!(["OK", event.id, false, msg]);
             tx.lock()
                 .await
                 .send(tungstenite::Message::text(ok_json.to_string()))
@@ -662,7 +665,7 @@ mod tests {
         sleep(Duration::from_millis(200)).await;
 
         // create pool and relay urls
-        let mut pool = Pool::new();
+        let mut pool = Network::new();
         let relay_urls = vec![
             "ws://127.0.0.1:8083".to_string(),
             "ws://127.0.0.1:8084".to_string(),

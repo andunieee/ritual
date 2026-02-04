@@ -33,11 +33,11 @@ pub mod server;
 mod btree;
 mod database;
 mod finalizer;
-mod normalize;
-mod pool;
+mod network;
 mod relay;
 mod tags;
 mod types;
+mod util;
 
 // re-export commonly used types
 pub use btree::BTreeEventDatabase;
@@ -47,11 +47,12 @@ pub use event_template::EventTemplate;
 pub use filter::{Filter, TagQuery};
 pub use keys::{PubKey, SecretKey};
 pub use metadata::Metadata;
-pub use normalize::*;
+pub use network::{Network, Occurrence, PublishResult};
 pub use pointers::{AddressPointer, EventPointer, Pointer, ProfilePointer};
-pub use pool::{Occurrence, Pool, PublishResult};
 pub use profile::Profile;
 pub use relay::{CloseReason, Relay, SubscriptionOptions};
 pub use tags::{Tag, Tags};
 pub use timestamp::Timestamp;
 pub use types::*;
+pub use util::*;
+

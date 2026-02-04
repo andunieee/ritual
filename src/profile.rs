@@ -37,7 +37,7 @@ impl Profile {
         }
     }
 
-    pub async fn from_metadata_fetch(pool: &crate::Pool, pk: crate::PubKey) -> Self {
+    pub async fn from_metadata_fetch(pool: &crate::Network, pk: crate::PubKey) -> Self {
         let mut events = pool
             .query(
                 INDEXER_RELAYS,
@@ -93,7 +93,7 @@ impl Profile {
         }
     }
 
-    pub async fn fetch_metadata(&mut self, pool: &crate::Pool) {
+    pub async fn fetch_metadata(&mut self, pool: &crate::Network) {
         let profile = Self::from_metadata_fetch(pool, self.pubkey).await;
 
         match (&self.event, &profile.event) {
