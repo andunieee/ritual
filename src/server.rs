@@ -209,7 +209,7 @@ pub async fn start(
                     Ok(hyper::Response::builder()
                         .status(hyper::StatusCode::OK)
                         .body(http_body_util::Full::new(bytes::Bytes::from(
-                            "nostr relay made with ritual",
+                            "ritualistic nostr relay",
                         )))
                         .unwrap())
                 }

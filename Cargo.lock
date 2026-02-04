@@ -1405,7 +1405,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ritual"
+name = "ritualistic"
 version = "0.1.0"
 dependencies = [
  "assertables",

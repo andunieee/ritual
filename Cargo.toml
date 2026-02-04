@@ -1,11 +1,11 @@
 [package]
-name = "ritual"
+name = "ritualistic"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
 authors = ["andunië", "andunie@cassis.cash"]
 description = "simple nostr library"
-repository = "https://github.com/andunieee/ritual"
+repository = "https://github.com/andunieee/ritualistic"
 keywords = ["nostr"]
 
 [dependencies]

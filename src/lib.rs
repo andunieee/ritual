@@ -1,4 +1,4 @@
-//! # ritual
+//! # ritualistic
 //!
 //! nostr types and utilities
 //!
